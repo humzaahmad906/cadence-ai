@@ -66,7 +66,17 @@ struct WizardView: View {
                     Label("Cancel", systemImage: "xmark")
                 }.buttonStyle(SecondaryButtonStyle())
             }
-            Text(draft.title).font(DS.Font.displayL)
+            VStack(alignment: .leading, spacing: 3) {
+                TextField("Task headline", text: Binding(
+                    get: { draft.title },
+                    set: { newValue in appState.updateWizardDraft { $0.title = newValue } }
+                ), axis: .vertical)
+                .textFieldStyle(.plain)
+                .font(DS.Font.displayL)
+                .lineLimit(1...3)
+                Text("Edit the headline, then Regenerate below to redraft the description from it.")
+                    .font(DS.Font.micro).foregroundStyle(DS.textTertiary)
+            }
             HStack(spacing: 6) {
                 ForEach(w.repoIds, id: \.self) { rid in
                     if let r = appState.repos.first(where: { $0.id == rid }) {
