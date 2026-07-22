@@ -1,0 +1,53 @@
+name: Cadence
+options:
+  bundleIdPrefix: com.humza.cadence
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_HARDENED_RUNTIME: NO
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+targets:
+  Cadence:
+    type: application
+    platform: macOS
+    sources:
+      - Cadence
+      - path: Resources
+        buildPhase: resources
+        excludes:
+          - "AppIcon.iconset"
+          - "Icon-1024.png"
+    info:
+      path: Cadence/Info.plist
+      properties:
+        LSMinimumSystemVersion: "14.0"
+        NSHumanReadableCopyright: "© 2026 Humza"
+        CFBundleName: Cadence
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        CFBundleIconFile: Cadence
+        LSUIElement: false
+        NSUserNotificationAlertStyle: alert
+        NSMicrophoneUsageDescription: "Cadence listens to your voice for chat dictation."
+        NSSpeechRecognitionUsageDescription: "Cadence transcribes your voice into chat commands."
+        CFBundleURLTypes:
+          - CFBundleURLName: com.humza.cadence.url
+            CFBundleURLSchemes: [cadence]
+    entitlements:
+      path: Cadence/Cadence.entitlements
+      properties:
+        com.apple.security.app-sandbox: false
+        com.apple.security.files.user-selected.read-write: true
+        com.apple.security.network.client: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.humza.cadence.app
+        GENERATE_INFOPLIST_FILE: NO

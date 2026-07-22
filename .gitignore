@@ -1,0 +1,11 @@
+.DS_Store
+.build/
+build/
+DerivedData/
+*.xcodeproj
+Helpers/.venv/
+Helpers/__pycache__/
+*.pyc
+.env
+xcuserdata/
+SprintDash.app/
