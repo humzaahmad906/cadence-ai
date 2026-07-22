@@ -1,10 +1,6 @@
 import Foundation
 
 enum CadencePaths {
-    static var helpersDir: URL {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        return home.appendingPathComponent("Applications/Cadence/Helpers")
-    }
     static var appSupport: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dir = base.appendingPathComponent("Cadence")

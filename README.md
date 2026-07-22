@@ -13,7 +13,7 @@ Personal macOS dashboard for 2-week sprint tracking. Native SwiftUI + Kuzu graph
 
 ## Layout
 ```
-~/Applications/Cadence/            source repo
+~/cadence-ai/                      source repo
 ├── Cadence/                       Swift/SwiftUI sources
 ├── Helpers/                          kuzu_helper.py + .venv
 ├── Resources/ticket_template.md
@@ -30,7 +30,7 @@ Personal macOS dashboard for 2-week sprint tracking. Native SwiftUI + Kuzu graph
 ## Build
 ```
 brew install xcodegen        # if missing
-cd ~/Applications/Cadence
+cd ~/cadence-ai
 bash Scripts/build.sh        # installs to ~/Applications/Cadence.app
 ```
 
