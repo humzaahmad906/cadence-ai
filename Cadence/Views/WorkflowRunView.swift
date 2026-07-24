@@ -137,7 +137,7 @@ struct WorkflowRunView: View {
     private func isProse(_ kind: WorkflowBlockKind) -> Bool {
         switch kind {
         case .agentPrompt, .createTickets, .code: return false
-        case .manualReview, .summarize, .createDescription, .createSolution, .viewer, .docQA, .repoReport: return true
+        case .input, .manualReview, .summarize, .createDescription, .createSolution, .viewer, .docQA, .repoReport: return true
         }
     }
 

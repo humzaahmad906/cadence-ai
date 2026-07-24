@@ -248,11 +248,14 @@ private struct BlockEditor: View {
     @ViewBuilder
     private var config: some View {
         switch block.kind {
+        case .input:
+            labeledEditor("Input text — becomes the first block's output", text: $block.config.inputText, minHeight: 90)
         case .agentPrompt:
             labeledEditor("System prompt", text: $block.config.systemPrompt, minHeight: 90)
             labeledEditor("Prompt template · {{input}}, {{repos}}", text: $block.config.promptTemplate, minHeight: 70)
             Toggle("Agent returns structured JSON (feed to Create tickets)", isOn: $block.config.expectJSON)
                 .font(DS.Font.caption)
+            agentControls
         case .createTickets:
             HStack(spacing: DS.space4) {
                 labeledMenu("Default priority", selection: $block.config.defaultPriority, options: Priority.allCases.map { $0.rawValue })
@@ -267,12 +270,15 @@ private struct BlockEditor: View {
             labeledEditor("Prompt template · {{input}}", text: $block.config.promptTemplate, minHeight: 70)
             Toggle("Persist result as the daily digest", isOn: $block.config.persistAsDigest)
                 .font(DS.Font.caption)
+            agentControls
         case .createDescription:
             Text("Runs the wizard's description writer on the incoming task title, scoped to this workflow's repos. Its output feeds Create solution.")
                 .font(DS.Font.micro).foregroundStyle(DS.textTertiary)
+            agentControls
         case .createSolution:
             Text("Runs the wizard's solution designer on the incoming description, appending a Solution section.")
                 .font(DS.Font.micro).foregroundStyle(DS.textTertiary)
+            agentControls
         case .viewer:
             labeledMenu("Show", selection: $block.config.viewerTarget, options: ViewerTarget.allCases.map { $0.rawValue })
             if block.config.viewerTarget == ViewerTarget.ticket.rawValue {
@@ -286,12 +292,50 @@ private struct BlockEditor: View {
             labeledField("Document path (optional)", text: $block.config.docPath)
             Text("Answers the question about the previous block's output (a created doc) and/or the doc path, with repo access.")
                 .font(DS.Font.micro).foregroundStyle(DS.textTertiary)
+            agentControls
         case .repoReport:
             labeledField("Since (git ref or window, optional)", text: $block.config.sinceRef)
             Text("Summarizes recent activity across this workflow's repos using git log/show/diff/blame.")
                 .font(DS.Font.micro).foregroundStyle(DS.textTertiary)
+            agentControls
         case .code:
             codeConfig
+        }
+    }
+
+    /// Model / effort / repo-access controls shown on every agent-backed block.
+    @ViewBuilder
+    private var agentControls: some View {
+        HStack(alignment: .top, spacing: DS.space4) {
+            choiceMenu("Model", $block.config.model,
+                       [("", "Default"), ("opus", "opus"), ("sonnet", "sonnet"), ("haiku", "haiku")])
+            choiceMenu("Effort (research depth)", $block.config.effort,
+                       [("", "Default"), ("low", "low"), ("medium", "medium"), ("high", "high"), ("max", "max")])
+        }
+        Toggle("Give this block access to the workflow's repos", isOn: $block.config.useRepos)
+            .font(DS.Font.caption)
+    }
+
+    /// A menu whose stored value differs from its display label (so "" shows as "Default").
+    @ViewBuilder
+    private func choiceMenu(_ label: String, _ selection: Binding<String>, _ choices: [(String, String)]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).font(DS.Font.caption).foregroundStyle(DS.textSecondary)
+            Menu {
+                ForEach(choices, id: \.0) { value, name in
+                    Button(name) { selection.wrappedValue = value }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(choices.first(where: { $0.0 == selection.wrappedValue })?.1 ?? "Default")
+                        .font(DS.Font.body).foregroundStyle(DS.textPrimary)
+                    Image(systemName: "chevron.down").font(.caption2).foregroundStyle(DS.textTertiary)
+                }
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .background(RoundedRectangle(cornerRadius: DS.radius).fill(DS.insetBG))
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
         }
     }
 

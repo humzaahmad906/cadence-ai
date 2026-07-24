@@ -60,6 +60,8 @@ actor ClaudeBridge {
         systemPrompt: String,
         onToolUse: @escaping @Sendable (String) async -> Void,
         addDirs: [String] = [],
+        model: String = "",
+        effort: String = "",
         timeout: TimeInterval = 300
     ) async throws -> Any {
         let p = Process()
@@ -83,6 +85,8 @@ actor ClaudeBridge {
             "--permission-mode", "bypassPermissions",
             "--dangerously-skip-permissions",
         ])
+        if !model.isEmpty { args.append(contentsOf: ["--model", model]) }
+        if !effort.isEmpty { args.append(contentsOf: ["--effort", effort]) }
         p.arguments = args
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
@@ -140,10 +144,13 @@ actor ClaudeBridge {
     }
 
     /// Plain single-turn (no MCP). Kept for digest polishing + intake parsing.
-    func prompt(_ text: String, timeout: TimeInterval = 120) async throws -> String {
+    func prompt(_ text: String, model: String = "", effort: String = "", timeout: TimeInterval = 120) async throws -> String {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: binary)
-        p.arguments = ["-p", text]
+        var args = ["-p", text]
+        if !model.isEmpty { args.append(contentsOf: ["--model", model]) }
+        if !effort.isEmpty { args.append(contentsOf: ["--effort", effort]) }
+        p.arguments = args
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
         p.standardError = err

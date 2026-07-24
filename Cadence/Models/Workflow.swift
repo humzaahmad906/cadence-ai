@@ -18,6 +18,9 @@ import Foundation
 /// wizard's existing description/solution agents verbatim. To add a new kind: add a case here,
 /// a handler + registry line in WorkflowBlocks.swift, and a config editor in WorkflowBuilderView.
 enum WorkflowBlockKind: String, Codable, CaseIterable, Identifiable {
+    // Source
+    case input              // seed the pipeline with typed text (becomes the first block's input)
+
     // Generic building blocks
     case agentPrompt        // run a Claude agent over scoped repos, capture output
     case createTickets      // parse structured agent JSON into tickets, commit via AgentDispatcher
@@ -40,6 +43,7 @@ enum WorkflowBlockKind: String, Codable, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
+        case .input:             return "Input"
         case .agentPrompt:       return "Agent prompt"
         case .createTickets:     return "Create tickets"
         case .manualReview:      return "Manual review"
@@ -55,6 +59,7 @@ enum WorkflowBlockKind: String, Codable, CaseIterable, Identifiable {
 
     var icon: String {
         switch self {
+        case .input:             return "text.cursor"
         case .agentPrompt:       return "sparkles"
         case .createTickets:     return "plus.rectangle.on.rectangle"
         case .manualReview:      return "hand.raised"
@@ -70,6 +75,7 @@ enum WorkflowBlockKind: String, Codable, CaseIterable, Identifiable {
 
     var blurb: String {
         switch self {
+        case .input:             return "Seed the run with typed text — it becomes the first block's input."
         case .agentPrompt:       return "Run the Claude agent over the workflow's repos and capture its output."
         case .createTickets:     return "Parse the previous block's JSON into tickets and save them."
         case .manualReview:      return "Pause so you can approve or edit before the run continues."
@@ -152,6 +158,15 @@ struct WorkflowBlockConfig: Codable, Hashable {
     /// code: true once the agent's Validate check passes; reset whenever the code/contract changes.
     var validated: Bool = false
 
+    /// input: literal text this block emits, seeding the pipeline. Ignores stdin.
+    var inputText: String = ""
+    /// agent blocks: whether this block gets the workflow's scoped repos (--add-dir). Default on.
+    var useRepos: Bool = true
+    /// agent blocks: model alias passed to the claude CLI (--model). Empty = CLI default.
+    var model: String = ""
+    /// agent blocks: effort level passed to the claude CLI (--effort). Empty = CLI default.
+    var effort: String = ""
+
     init() {}
 
     // Custom decoder so new fields are forward/backward compatible: a workflow.json written by an
@@ -161,6 +176,7 @@ struct WorkflowBlockConfig: Codable, Hashable {
         case reviewInstructions, heading, persistAsDigest, viewerTarget, ticketId
         case docPath, question, sinceRef
         case code, interpreter, inputDesc, outputDesc, codeIntent, sampleInput, validated
+        case inputText, useRepos, model, effort
     }
 
     init(from decoder: Decoder) throws {
@@ -187,6 +203,10 @@ struct WorkflowBlockConfig: Codable, Hashable {
         codeIntent = str(.codeIntent)
         sampleInput = str(.sampleInput)
         validated = bool(.validated)
+        inputText = str(.inputText)
+        useRepos = bool(.useRepos, true)
+        model = str(.model)
+        effort = str(.effort)
     }
 }
 

@@ -35,6 +35,7 @@ extension WorkflowBlockHandler {
 enum WorkflowBlockRegistry {
     static func handler(for kind: WorkflowBlockKind) -> WorkflowBlockHandler {
         switch kind {
+        case .input:             return InputBlockHandler()
         case .agentPrompt:       return AgentPromptHandler()
         case .createTickets:     return CreateTicketsHandler()
         case .manualReview:      return ManualReviewHandler()
@@ -62,6 +63,9 @@ enum AgentBlockKit {
                          systemPrompt: String,
                          userMessage: String,
                          expectJSON: Bool,
+                         repoIds: [String],
+                         model: String = "",
+                         effort: String = "",
                          extraDirs: [String] = []) async throws -> String {
         let appState = context.appState
         appState.agentStart()
@@ -71,7 +75,7 @@ enum AgentBlockKit {
             ? systemPrompt
             : systemPrompt + "\n\nReturn JSON ONLY, no prose, no code fences: {\"output\": \"<your markdown result>\"}"
 
-        var dirs = appState.repoPaths(for: context.workflow.repoIds)
+        var dirs = appState.repoPaths(for: repoIds)
         dirs.append(CadencePaths.issuesDir.path)
         dirs.append(contentsOf: extraDirs.filter { !$0.isEmpty })
 
@@ -80,6 +84,8 @@ enum AgentBlockKit {
             systemPrompt: sys,
             onToolUse: { [appState] name in await appState.agentToolCalled(name) },
             addDirs: dirs,
+            model: model,
+            effort: effort,
             timeout: 360
         )
 
@@ -124,14 +130,25 @@ enum AgentBlockKit {
 
 // MARK: - Generic handlers
 
+/// Seeds the pipeline: emits its configured text verbatim, ignoring any incoming input.
+struct InputBlockHandler: WorkflowBlockHandler {
+    func run(_ block: WorkflowBlock, context: BlockRunContext) async throws -> String {
+        block.config.inputText
+    }
+}
+
 struct AgentPromptHandler: WorkflowBlockHandler {
     func run(_ block: WorkflowBlock, context: BlockRunContext) async throws -> String {
-        let repoBlock = AgentBlockKit.repoDescription(context.appState, repoIds: context.workflow.repoIds)
+        let repoIds = block.config.useRepos ? context.workflow.repoIds : []
+        let repoBlock = AgentBlockKit.repoDescription(context.appState, repoIds: repoIds)
         let userMessage = AgentBlockKit.fill(block.config.promptTemplate, input: context.input, repoBlock: repoBlock)
         return try await AgentBlockKit.runAgent(context,
                                                 systemPrompt: block.config.systemPrompt,
                                                 userMessage: userMessage,
-                                                expectJSON: block.config.expectJSON)
+                                                expectJSON: block.config.expectJSON,
+                                                repoIds: repoIds,
+                                                model: block.config.model,
+                                                effort: block.config.effort)
     }
 }
 
@@ -147,7 +164,7 @@ struct SummarizeHandler: WorkflowBlockHandler {
             : block.config.promptTemplate
         let promptText = AgentBlockKit.fill(template, input: context.input, repoBlock: "")
 
-        let raw = try await appState.claude.prompt(promptText, timeout: 180)
+        let raw = try await appState.claude.prompt(promptText, model: block.config.model, effort: block.config.effort, timeout: 180)
         let result = "# \(heading)\n\n\(raw.trimmingCharacters(in: .whitespacesAndNewlines))"
         if block.config.persistAsDigest { appState.persistDigest(result) }
         return result
@@ -251,7 +268,9 @@ struct CreateDescriptionHandler: WorkflowBlockHandler {
         let title = AgentBlockKit.firstLine(context.input)
         guard !title.isEmpty else { return "No task title supplied to Create Description." }
         let result = try await context.appState.descriptionAgent(
-            taskTitle: title, sprintName: context.workflow.name, repoIds: context.workflow.repoIds)
+            taskTitle: title, sprintName: context.workflow.name,
+            repoIds: block.config.useRepos ? context.workflow.repoIds : [],
+            model: block.config.model, effort: block.config.effort)
         let desc = result.description.isEmpty ? "_(no description produced)_" : result.description
         return "# \(title)\n\n\(desc)"
     }
@@ -265,7 +284,8 @@ struct CreateSolutionHandler: WorkflowBlockHandler {
         let result = try await context.appState.solutionAgent(
             taskTitle: title.isEmpty ? "Task" : title,
             description: context.input,
-            repoIds: context.workflow.repoIds)
+            repoIds: block.config.useRepos ? context.workflow.repoIds : [],
+            model: block.config.model, effort: block.config.effort)
         let sol = result.solution.isEmpty ? "_(no solution produced)_" : result.solution
         return "\(context.input)\n\n## Solution\n\n\(sol)"
     }
@@ -335,6 +355,9 @@ struct DocQAHandler: WorkflowBlockHandler {
                                                 systemPrompt: systemPrompt,
                                                 userMessage: userMessage,
                                                 expectJSON: false,
+                                                repoIds: block.config.useRepos ? context.workflow.repoIds : [],
+                                                model: block.config.model,
+                                                effort: block.config.effort,
                                                 extraDirs: [block.config.docPath])
     }
 }
@@ -343,7 +366,8 @@ struct DocQAHandler: WorkflowBlockHandler {
 struct RepoReportHandler: WorkflowBlockHandler {
     func run(_ block: WorkflowBlock, context: BlockRunContext) async throws -> String {
         let since = block.config.sinceRef.isEmpty ? "the last 2 weeks" : block.config.sinceRef
-        let repoBlock = AgentBlockKit.repoDescription(context.appState, repoIds: context.workflow.repoIds)
+        let repoIds = block.config.useRepos ? context.workflow.repoIds : []
+        let repoBlock = AgentBlockKit.repoDescription(context.appState, repoIds: repoIds)
         let systemPrompt = """
         You are the Cadence repo reporter. Use Bash(git log:*), Bash(git show:*), Bash(git diff:*),
         Bash(git blame:*) plus Read/Grep/Glob to summarize development activity in the scoped repos:
@@ -365,7 +389,10 @@ struct RepoReportHandler: WorkflowBlockHandler {
         return try await AgentBlockKit.runAgent(context,
                                                 systemPrompt: systemPrompt,
                                                 userMessage: userMessage,
-                                                expectJSON: false)
+                                                expectJSON: false,
+                                                repoIds: repoIds,
+                                                model: block.config.model,
+                                                effort: block.config.effort)
     }
 }
 

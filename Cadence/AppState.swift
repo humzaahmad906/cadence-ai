@@ -429,7 +429,7 @@ final class AppState: ObservableObject {
     /// Shared "description writer" agent, reused by the wizard AND the workflow `createDescription`
     /// block. Explores the scoped repos and returns (exploration, description) markdown. Manages
     /// the agent status indicators itself.
-    func descriptionAgent(taskTitle: String, sprintName: String, repoIds: [String], branches: [String: String] = [:]) async throws -> (exploration: String, description: String) {
+    func descriptionAgent(taskTitle: String, sprintName: String, repoIds: [String], branches: [String: String] = [:], model: String = "", effort: String = "") async throws -> (exploration: String, description: String) {
         agentStart()
         defer { agentStop() }
 
@@ -473,6 +473,8 @@ final class AppState: ObservableObject {
                 await MainActor.run { self.agentToolCalled(name) }
             },
             addDirs: repoPaths(for: repoIds),
+            model: model,
+            effort: effort,
             timeout: 360
         )
         let dict = obj as? [String: Any] ?? [:]
@@ -481,7 +483,7 @@ final class AppState: ObservableObject {
 
     /// Shared "solution designer" agent, reused by the wizard AND the workflow `createSolution`
     /// block. Returns (exploration, solution) markdown. Manages the agent status indicators itself.
-    func solutionAgent(taskTitle: String, description: String, repoIds: [String], branches: [String: String] = [:]) async throws -> (exploration: String, solution: String) {
+    func solutionAgent(taskTitle: String, description: String, repoIds: [String], branches: [String: String] = [:], model: String = "", effort: String = "") async throws -> (exploration: String, solution: String) {
         agentStart()
         defer { agentStop() }
 
@@ -526,6 +528,8 @@ final class AppState: ObservableObject {
                 await MainActor.run { self.agentToolCalled(name) }
             },
             addDirs: repoPaths(for: repoIds),
+            model: model,
+            effort: effort,
             timeout: 420
         )
         let dict = obj as? [String: Any] ?? [:]
