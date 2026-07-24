@@ -81,6 +81,11 @@ final class AppState: ObservableObject {
     @Published var workflows: [Workflow] = []
     @Published var activeRun: WorkflowRun?
 
+    // Code block: standalone Run button state in the builder, keyed by block id.
+    @Published var codeBlockOutput: [UUID: String] = [:]
+    @Published var codeBlockRunningId: UUID?
+    private var codeBlockTask: Task<Void, Never>?
+
     init() {
         self.conversations = ChatStore.loadConversations()
         if self.conversations.isEmpty {
@@ -1040,6 +1045,110 @@ final class AppState: ObservableObject {
 
     func resumeReview(approve: Bool, editedOutput: String?) async {
         await runner.resumeReview(approve: approve, editedOutput: editedOutput)
+    }
+
+    // MARK: code blocks (Generate / Validate / standalone Run)
+
+    /// Agent writes the block's Python from its intent + I/O contract. Returns the code ("" on error).
+    func generateCode(for block: WorkflowBlock) async -> String {
+        let c = block.config
+        let prompt = """
+        Write a Python 3 script for a data-pipeline "code block". The script reads the previous block's
+        output from STDIN and writes this block's output to STDOUT.
+
+        WHAT IT SHOULD DO:
+        \(c.codeIntent.isEmpty ? "(transform the input into the output described below)" : c.codeIntent)
+
+        INPUT (stdin): \(c.inputDesc.isEmpty ? "arbitrary text" : c.inputDesc)
+        OUTPUT (stdout): \(c.outputDesc.isEmpty ? "the transformed text" : c.outputDesc)
+
+        Rules:
+        - Read stdin with sys.stdin.read() if you need the input.
+        - Print ONLY the intended output to stdout.
+        - If you produce an image/chart, save it to a file and print that file's absolute path as the
+          sole output (a viewer block downstream renders it).
+        - Prefer the standard library; if you must import a package, assume it is installed.
+
+        Return JSON: {"code":"<the full python script>"}
+        """
+        do {
+            let obj = try await claude.promptJSON(prompt, timeout: 120)
+            if let d = obj as? [String: Any], let code = d["code"] as? String { return code }
+        } catch {
+            addAmbient(AmbientEvent(kind: .error, text: "Generate code failed: \(error.localizedDescription)", at: Date(), target: nil))
+        }
+        return ""
+    }
+
+    /// Agent statically checks the code against the I/O contract (no execution). (passed, message).
+    func validateCode(_ block: WorkflowBlock) async -> (ok: Bool, message: String) {
+        let c = block.config
+        guard !c.code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return (false, "No code to validate.")
+        }
+        let prompt = """
+        You validate a Python "code block" in a data pipeline. It reads stdin and writes stdout.
+        Judge ONLY whether the code, as written, would consume the described input and produce the
+        described output. Reason about it; do not run it.
+
+        INPUT (stdin): \(c.inputDesc.isEmpty ? "(unspecified)" : c.inputDesc)
+        OUTPUT (stdout): \(c.outputDesc.isEmpty ? "(unspecified)" : c.outputDesc)
+
+        CODE:
+        ```python
+        \(c.code)
+        ```
+
+        Return JSON: {"valid": true, "reason": "<one or two sentences>"}  (valid may be true or false)
+        """
+        do {
+            let obj = try await claude.promptJSON(prompt, timeout: 120)
+            if let d = obj as? [String: Any] {
+                return ((d["valid"] as? Bool) ?? false, (d["reason"] as? String) ?? "")
+            }
+        } catch {
+            return (false, "Validation error: \(error.localizedDescription)")
+        }
+        return (false, "Validator returned no verdict.")
+    }
+
+    /// Builder's per-block Run: execute the block's code once on its sample stdin, streaming stdout
+    /// into `codeBlockOutput[block.id]`. Cancelable via `cancelCodeBlock()`.
+    func runCodeBlock(_ block: WorkflowBlock, repoIds: [String]) {
+        codeBlockTask?.cancel()
+        let id = block.id
+        let cfg = block.config
+        let cwd = repoPaths(for: repoIds).first
+        codeBlockOutput[id] = ""
+        codeBlockRunningId = id
+        codeBlockTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await CodeRunner.shared.run(
+                    interpreter: cfg.interpreter,
+                    code: cfg.code,
+                    stdin: cfg.sampleInput,
+                    workingDirectory: cwd,
+                    timeout: 300,
+                    onOutput: { chunk in
+                        await MainActor.run { self.codeBlockOutput[id, default: ""] += chunk }
+                    }
+                )
+                if result.exitCode != 0 {
+                    let err = result.stderr.isEmpty ? "(no stderr)" : result.stderr
+                    self.codeBlockOutput[id, default: ""] += "\n\n[exit \(result.exitCode)]\n\(err)"
+                }
+            } catch is CancellationError {
+                self.codeBlockOutput[id, default: ""] += "\n\n[canceled]"
+            } catch {
+                self.codeBlockOutput[id, default: ""] += "\n\n[error] \(error.localizedDescription)"
+            }
+            self.codeBlockRunningId = nil
+        }
+    }
+
+    func cancelCodeBlock() {
+        codeBlockTask?.cancel()
     }
 
     func moveTicket(_ ticket: Ticket, to status: TicketStatus) async {

@@ -134,6 +134,7 @@ struct WorkflowBuilderView: View {
                     block: blockBinding(idx),
                     index: idx,
                     count: draft?.blocks.count ?? 0,
+                    repoIds: draft?.repoIds ?? [],
                     onMoveUp: { move(idx, by: -1) },
                     onMoveDown: { move(idx, by: 1) },
                     onDelete: { removeBlock(idx) }
@@ -208,12 +209,17 @@ struct WorkflowBuilderView: View {
 // MARK: - Block editor
 
 private struct BlockEditor: View {
+    @EnvironmentObject var appState: AppState
     @Binding var block: WorkflowBlock
     let index: Int
     let count: Int
+    let repoIds: [String]
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
     let onDelete: () -> Void
+
+    @State private var validateMsg = ""
+    @State private var thinking = false
 
     var body: some View {
         Card(padding: DS.space4) {
@@ -284,6 +290,84 @@ private struct BlockEditor: View {
             labeledField("Since (git ref or window, optional)", text: $block.config.sinceRef)
             Text("Summarizes recent activity across this workflow's repos using git log/show/diff/blame.")
                 .font(DS.Font.micro).foregroundStyle(DS.textTertiary)
+        case .code:
+            codeConfig
+        }
+    }
+
+    private var codeBinding: Binding<String> {
+        Binding(
+            get: { block.config.code },
+            set: { block.config.code = $0; block.config.validated = false }  // edits invalidate the check
+        )
+    }
+
+    @ViewBuilder
+    private var codeConfig: some View {
+        HStack(alignment: .top, spacing: DS.space4) {
+            labeledField("Input (stdin)", text: $block.config.inputDesc)
+            labeledField("Output (stdout)", text: $block.config.outputDesc)
+        }
+        labeledField("Interpreter", text: $block.config.interpreter)
+        labeledField("What it should do (for Generate)", text: $block.config.codeIntent)
+        labeledEditor("Python · reads stdin, writes stdout", text: codeBinding, minHeight: 140)
+
+        HStack(spacing: DS.space3) {
+            Button {
+                Task {
+                    thinking = true
+                    let code = await appState.generateCode(for: block)
+                    thinking = false
+                    if !code.isEmpty { block.config.code = code; block.config.validated = false; validateMsg = "" }
+                }
+            } label: { Label("Generate", systemImage: "sparkles") }
+                .buttonStyle(.borderless).disabled(thinking)
+
+            Button {
+                Task {
+                    thinking = true
+                    let r = await appState.validateCode(block)
+                    thinking = false
+                    block.config.validated = r.ok
+                    validateMsg = r.message
+                }
+            } label: { Label("Validate", systemImage: "checkmark.seal") }
+                .buttonStyle(.borderless).disabled(block.config.code.isEmpty || thinking)
+
+            if appState.codeBlockRunningId == block.id {
+                Button { appState.cancelCodeBlock() } label: { Label("Cancel", systemImage: "stop.fill") }
+                    .buttonStyle(.borderless).foregroundStyle(DS.danger)
+            } else {
+                Button { appState.runCodeBlock(block, repoIds: repoIds) } label: { Label("Run", systemImage: "play.fill") }
+                    .buttonStyle(.borderless).disabled(block.config.code.isEmpty)
+            }
+
+            if thinking { ProgressView().controlSize(.small) }
+            Spacer()
+            if block.config.validated {
+                Label("validated", systemImage: "checkmark.seal.fill")
+                    .font(DS.Font.micro).foregroundStyle(DS.ok)
+            }
+        }
+
+        if !validateMsg.isEmpty {
+            Text(validateMsg).font(DS.Font.micro)
+                .foregroundStyle(block.config.validated ? DS.textSecondary : DS.warn)
+        }
+
+        labeledField("Sample stdin (for Run)", text: $block.config.sampleInput)
+
+        if let out = appState.codeBlockOutput[block.id], !out.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Run output").font(DS.Font.caption).foregroundStyle(DS.textSecondary)
+                ScrollView {
+                    OutputContent(text: out, prose: false)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 260)
+                .padding(DS.space2)
+                .background(RoundedRectangle(cornerRadius: DS.radius).fill(DS.insetBG))
+            }
         }
     }
 

@@ -79,6 +79,32 @@ Display + inspection blocks:
 | `docQA` | Agent preset: answers a question about the incoming doc (and/or a doc path) with repo access, citing sources. | `question`, `docPath` |
 | `repoReport` | Agent preset: summarizes repo activity (commits, branches, churn) via `git log/show/diff/blame`. | `sinceRef` |
 
+Code blocks (deterministic — real code, not an agent):
+
+| Kind | What it does | Key config |
+| --- | --- | --- |
+| `code` | Runs a **Python** script as a pipeline step: the previous block's output is piped to **stdin**, the script's **stdout** becomes this block's output. Author it two ways — **Generate** (the agent writes it from the intent + I/O contract) or paste your own and **Validate** (the agent checks it against the contract, *without running it*). A per-block **Run** button executes it once against `sampleInput`, streaming output live and cancelable. If the script prints the path of an image file, a downstream `viewer` renders the image. | `interpreter`, `code`, `inputDesc`, `outputDesc`, `codeIntent`, `sampleInput`, `validated` |
+
+### The `code` block
+
+A `code` block is deliberately **not** an agent — it's a subprocess (`Services/CodeRunner.swift`),
+so it's the deterministic glue between agent blocks (transform JSON → markdown, fetch/shape data,
+draw a chart). Design choices, kept intentionally small:
+
+- **Python-first, one interpreter.** `interpreter` defaults to `python3`; a bare name resolves on
+  `PATH` via `/usr/bin/env`, an absolute path (e.g. a venv's python) runs directly. There is **no
+  venv/requirements manager** — if the script imports a package, it must already be installed, else
+  the block fails with the real `ImportError`.
+- **stdin → stdout.** At run time the previous block's output is the script's stdin; its stdout is
+  carried forward. Working directory is the first scoped repo, so scripts can read repo files.
+- **Generate / Validate use the plain LLM** (`ClaudeBridge.prompt`) — no repo access, no tools —
+  so they're fast and self-contained. `validated` flips true on a passing Validate and resets
+  whenever the code or contract changes. Validation is advisory; **Run** is the source of truth.
+- **A non-zero exit fails the block** (surfacing stderr) exactly like any other handler throw.
+- **Visualization falls out for free:** print an image path, follow with a `viewer` block. No
+  artifact store, no `$CADENCE_OUT` — `OutputContent` (Views/WorkflowRunView.swift) renders any
+  output that is a lone image-file path.
+
 Prompt templates support two placeholders: `{{input}}` (previous block's output) and
 `{{repos}}` (a description of the scoped repos).
 

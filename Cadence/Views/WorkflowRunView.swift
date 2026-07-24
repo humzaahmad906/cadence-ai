@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Live progress for one workflow run: per-block status, captured output, and the
 /// approve/edit/reject controls for a paused `manualReview` block.
@@ -92,9 +93,7 @@ struct WorkflowRunView: View {
                     reviewControls(block)
                 } else if !block.output.isEmpty {
                     ScrollView {
-                        Text(block.output)
-                            .font(isProse(block.kind) ? DS.Font.body : DS.Font.mono)
-                            .textSelection(.enabled)
+                        OutputContent(text: block.output, prose: isProse(block.kind))
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .frame(maxHeight: 320)
@@ -137,7 +136,7 @@ struct WorkflowRunView: View {
     /// Markdown-ish blocks read better in a proportional font; JSON-shaped output stays monospaced.
     private func isProse(_ kind: WorkflowBlockKind) -> Bool {
         switch kind {
-        case .agentPrompt, .createTickets: return false
+        case .agentPrompt, .createTickets, .code: return false
         case .manualReview, .summarize, .createDescription, .createSolution, .viewer, .docQA, .repoReport: return true
         }
     }
@@ -166,5 +165,37 @@ struct WorkflowRunView: View {
         case .failed:         tint = DS.danger
         }
         return Chip(status.rawValue, tint: tint)
+    }
+}
+
+/// Renders a block's textual output — but if the text is just a path to an existing image file,
+/// shows the image instead. This is the code-block → viewer visualization path: a script prints an
+/// image path and a downstream viewer (or this run view) renders it.
+struct OutputContent: View {
+    let text: String
+    var prose: Bool = false
+
+    var body: some View {
+        if let image = Self.image(fromPath: text) {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(maxHeight: 360)
+                .clipShape(RoundedRectangle(cornerRadius: DS.radius))
+        } else {
+            Text(text)
+                .font(prose ? DS.Font.body : DS.Font.mono)
+                .textSelection(.enabled)
+        }
+    }
+
+    /// An NSImage if `text` is a lone path to an existing image file, else nil.
+    static func image(fromPath text: String) -> NSImage? {
+        let path = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty, path.count < 2048, !path.contains("\n") else { return nil }
+        let ext = (path as NSString).pathExtension.lowercased()
+        guard ["png", "jpg", "jpeg", "gif", "bmp", "tiff", "heic", "webp"].contains(ext) else { return nil }
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
+        return NSImage(contentsOfFile: path)
     }
 }

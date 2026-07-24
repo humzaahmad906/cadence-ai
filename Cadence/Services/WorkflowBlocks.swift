@@ -44,6 +44,7 @@ enum WorkflowBlockRegistry {
         case .viewer:            return ViewerHandler()
         case .docQA:             return DocQAHandler()
         case .repoReport:        return RepoReportHandler()
+        case .code:              return CodeBlockHandler()
         }
     }
 }
@@ -365,5 +366,27 @@ struct RepoReportHandler: WorkflowBlockHandler {
                                                 systemPrompt: systemPrompt,
                                                 userMessage: userMessage,
                                                 expectJSON: false)
+    }
+}
+
+// MARK: - Code handler
+
+/// Runs the block's script (Python by default). The previous block's output is piped to stdin;
+/// the script's stdout becomes this block's output. A non-zero exit fails the block, surfacing
+/// stderr. The working directory is the first scoped repo, so scripts can read repo files.
+struct CodeBlockHandler: WorkflowBlockHandler {
+    func run(_ block: WorkflowBlock, context: BlockRunContext) async throws -> String {
+        let cwd = context.appState.repoPaths(for: context.workflow.repoIds).first
+        let result = try await CodeRunner.shared.run(
+            interpreter: block.config.interpreter,
+            code: block.config.code,
+            stdin: context.input,
+            workingDirectory: cwd,
+            timeout: 300
+        )
+        if result.exitCode != 0 {
+            throw CodeRunError.nonZero(exit: result.exitCode, stderr: result.stderr)
+        }
+        return result.stdout.trimmingCharacters(in: .newlines)
     }
 }

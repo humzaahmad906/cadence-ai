@@ -33,6 +33,9 @@ enum WorkflowBlockKind: String, Codable, CaseIterable, Identifiable {
     case docQA              // agent preset: answer a question about a doc/markdown source
     case repoReport         // agent preset: summarize repo activity via git log/show/diff/blame
 
+    // Code
+    case code               // run a (Python) script that transforms the previous block's output
+
     var id: String { rawValue }
 
     var label: String {
@@ -46,6 +49,7 @@ enum WorkflowBlockKind: String, Codable, CaseIterable, Identifiable {
         case .viewer:            return "Viewer"
         case .docQA:             return "Doc Q&A"
         case .repoReport:        return "Repo report"
+        case .code:              return "Code"
         }
     }
 
@@ -60,6 +64,7 @@ enum WorkflowBlockKind: String, Codable, CaseIterable, Identifiable {
         case .viewer:            return "eye"
         case .docQA:             return "questionmark.bubble"
         case .repoReport:        return "chart.bar.doc.horizontal"
+        case .code:              return "curlybraces"
         }
     }
 
@@ -74,6 +79,7 @@ enum WorkflowBlockKind: String, Codable, CaseIterable, Identifiable {
         case .viewer:            return "Read-only display of a doc, ticket, repo summary, or the previous block's output."
         case .docQA:             return "Ask a question about a document (or repo docs) and get a cited answer."
         case .repoReport:        return "Summarize recent repo activity (commits, branches, churn) via git."
+        case .code:              return "Run a Python script that transforms the previous block's output. Generate it with the agent, or paste your own and validate it."
         }
     }
 }
@@ -128,7 +134,60 @@ struct WorkflowBlockConfig: Codable, Hashable {
     /// repoReport: the window to report on (a git ref, date, or free phrase like "the last 2 weeks").
     var sinceRef: String = ""
 
+    // code: a script step. stdin = previous block's output; stdout = this block's output.
+    /// code: the script body (Python for v1).
+    var code: String = ""
+    /// code: interpreter to run it with. A bare name (e.g. "python3") resolves on PATH via /usr/bin/env;
+    /// an absolute path (e.g. a venv's python) runs directly.
+    var interpreter: String = "python3"
+    /// code: human description of the input this block expects — drives Generate + Validate.
+    var inputDesc: String = ""
+    /// code: human description of the output this block should emit — drives Generate + Validate.
+    var outputDesc: String = ""
+    /// code: what the block should do; the agent turns this into code in Generate mode.
+    var codeIntent: String = ""
+    /// code: sample stdin for the builder's standalone Run button. Ignored during a workflow run,
+    /// where the previous block's real output is stdin.
+    var sampleInput: String = ""
+    /// code: true once the agent's Validate check passes; reset whenever the code/contract changes.
+    var validated: Bool = false
+
     init() {}
+
+    // Custom decoder so new fields are forward/backward compatible: a workflow.json written by an
+    // older build (missing a key) still loads, using the property default instead of throwing.
+    private enum CodingKeys: String, CodingKey {
+        case systemPrompt, promptTemplate, expectJSON, defaultPriority, defaultStatus
+        case reviewInstructions, heading, persistAsDigest, viewerTarget, ticketId
+        case docPath, question, sinceRef
+        case code, interpreter, inputDesc, outputDesc, codeIntent, sampleInput, validated
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func str(_ k: CodingKeys, _ d: String = "") -> String { (try? c.decode(String.self, forKey: k)) ?? d }
+        func bool(_ k: CodingKeys, _ d: Bool = false) -> Bool { (try? c.decode(Bool.self, forKey: k)) ?? d }
+        systemPrompt = str(.systemPrompt)
+        promptTemplate = str(.promptTemplate)
+        expectJSON = bool(.expectJSON)
+        defaultPriority = str(.defaultPriority, "P3")
+        defaultStatus = str(.defaultStatus, "Backlog")
+        reviewInstructions = str(.reviewInstructions)
+        heading = str(.heading, "Summary")
+        persistAsDigest = bool(.persistAsDigest)
+        viewerTarget = str(.viewerTarget, ViewerTarget.previousOutput.rawValue)
+        ticketId = str(.ticketId)
+        docPath = str(.docPath)
+        question = str(.question)
+        sinceRef = str(.sinceRef)
+        code = str(.code)
+        interpreter = str(.interpreter, "python3")
+        inputDesc = str(.inputDesc)
+        outputDesc = str(.outputDesc)
+        codeIntent = str(.codeIntent)
+        sampleInput = str(.sampleInput)
+        validated = bool(.validated)
+    }
 }
 
 /// One ordered step in a workflow.
