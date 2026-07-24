@@ -81,10 +81,10 @@ final class AppState: ObservableObject {
     @Published var workflows: [Workflow] = []
     @Published var activeRun: WorkflowRun?
 
-    // Code block: standalone Run button state in the builder, keyed by block id.
-    @Published var codeBlockOutput: [UUID: String] = [:]
-    @Published var codeBlockRunningId: UUID?
-    private var codeBlockTask: Task<Void, Never>?
+    // Debug: single-block run output/state in the builder, keyed by block id.
+    @Published var debugOutput: [UUID: String] = [:]
+    @Published var debugRunningId: UUID?
+    private var debugTask: Task<Void, Never>?
 
     init() {
         self.conversations = ChatStore.loadConversations()
@@ -1129,43 +1129,54 @@ final class AppState: ObservableObject {
         return (false, "Validator returned no verdict.")
     }
 
-    /// Builder's per-block Run: execute the block's code once on its sample stdin, streaming stdout
-    /// into `codeBlockOutput[block.id]`. Cancelable via `cancelCodeBlock()`.
-    func runCodeBlock(_ block: WorkflowBlock, repoIds: [String]) {
-        codeBlockTask?.cancel()
+    /// Builder debug: run ONE block in isolation with `input`, storing output in debugOutput[block.id].
+    /// Code blocks stream stdout via CodeRunner; every other kind runs its handler to completion
+    /// (agent blocks really call claude — it's debugging). Cancelable via cancelDebugRun().
+    func debugRunBlock(_ block: WorkflowBlock, workflow: Workflow, input: String) {
+        debugTask?.cancel()
         let id = block.id
-        let cfg = block.config
-        let cwd = repoPaths(for: repoIds).first
-        codeBlockOutput[id] = ""
-        codeBlockRunningId = id
-        codeBlockTask = Task { [weak self] in
+        debugOutput[id] = ""
+        debugRunningId = id
+        debugTask = Task { [weak self] in
             guard let self else { return }
-            do {
-                let result = try await CodeRunner.shared.run(
-                    interpreter: cfg.interpreter,
-                    code: cfg.code,
-                    stdin: cfg.sampleInput,
-                    workingDirectory: cwd,
-                    timeout: 300,
-                    onOutput: { chunk in
-                        await MainActor.run { self.codeBlockOutput[id, default: ""] += chunk }
+            if block.kind == .code {
+                let cfg = block.config
+                let cwd = self.repoPaths(for: workflow.repoIds).first
+                do {
+                    let result = try await CodeRunner.shared.run(
+                        interpreter: cfg.interpreter,
+                        code: cfg.code,
+                        stdin: input,
+                        workingDirectory: cwd,
+                        timeout: 300,
+                        onOutput: { chunk in
+                            await MainActor.run { self.debugOutput[id, default: ""] += chunk }
+                        }
+                    )
+                    if result.exitCode != 0 {
+                        let err = result.stderr.isEmpty ? "(no stderr)" : result.stderr
+                        self.debugOutput[id, default: ""] += "\n\n[exit \(result.exitCode)]\n\(err)"
                     }
-                )
-                if result.exitCode != 0 {
-                    let err = result.stderr.isEmpty ? "(no stderr)" : result.stderr
-                    self.codeBlockOutput[id, default: ""] += "\n\n[exit \(result.exitCode)]\n\(err)"
+                } catch is CancellationError {
+                    self.debugOutput[id, default: ""] += "\n\n[canceled]"
+                } catch {
+                    self.debugOutput[id, default: ""] += "\n\n[error] \(error.localizedDescription)"
                 }
-            } catch is CancellationError {
-                self.codeBlockOutput[id, default: ""] += "\n\n[canceled]"
-            } catch {
-                self.codeBlockOutput[id, default: ""] += "\n\n[error] \(error.localizedDescription)"
+            } else {
+                let handler = WorkflowBlockRegistry.handler(for: block.kind)
+                let ctx = BlockRunContext(appState: self, workflow: workflow, input: input)
+                do {
+                    self.debugOutput[id] = try await handler.run(block, context: ctx)
+                } catch {
+                    self.debugOutput[id, default: ""] += "[error] \(error.localizedDescription)"
+                }
             }
-            self.codeBlockRunningId = nil
+            self.debugRunningId = nil
         }
     }
 
-    func cancelCodeBlock() {
-        codeBlockTask?.cancel()
+    func cancelDebugRun() {
+        debugTask?.cancel()
     }
 
     func moveTicket(_ ticket: Ticket, to status: TicketStatus) async {

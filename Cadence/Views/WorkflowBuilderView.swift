@@ -7,6 +7,7 @@ struct WorkflowBuilderView: View {
 
     @State private var draft: Workflow?
     @State private var loaded = false
+    @State private var debugMode = false
 
     var body: some View {
         Group {
@@ -57,6 +58,9 @@ struct WorkflowBuilderView: View {
                 Label("Workflows", systemImage: "arrow.left")
             }.buttonStyle(SecondaryButtonStyle())
             Spacer()
+            Toggle(isOn: $debugMode) { Label("Debug", systemImage: "ladybug") }
+                .toggleStyle(.button)
+                .help("Show a per-block runner so you can test each block in isolation")
             Button { save() } label: { Label("Save", systemImage: "checkmark") }
                 .buttonStyle(SecondaryButtonStyle())
             Button { save(); Task { await appState.runWorkflow(workflowId) } } label: {
@@ -134,7 +138,8 @@ struct WorkflowBuilderView: View {
                     block: blockBinding(idx),
                     index: idx,
                     count: draft?.blocks.count ?? 0,
-                    repoIds: draft?.repoIds ?? [],
+                    workflow: draft ?? Workflow(name: ""),
+                    debugMode: debugMode,
                     onMoveUp: { move(idx, by: -1) },
                     onMoveDown: { move(idx, by: 1) },
                     onDelete: { removeBlock(idx) }
@@ -213,13 +218,15 @@ private struct BlockEditor: View {
     @Binding var block: WorkflowBlock
     let index: Int
     let count: Int
-    let repoIds: [String]
+    let workflow: Workflow
+    let debugMode: Bool
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
     let onDelete: () -> Void
 
     @State private var validateMsg = ""
     @State private var thinking = false
+    @State private var debugInput = ""
 
     var body: some View {
         Card(padding: DS.space4) {
@@ -241,6 +248,7 @@ private struct BlockEditor: View {
                 Text(block.kind.blurb).font(DS.Font.caption).foregroundStyle(DS.textTertiary)
                 Divider().overlay(DS.borderSoft)
                 config
+                if debugMode { debugSection }
             }
         }
     }
@@ -300,6 +308,37 @@ private struct BlockEditor: View {
             agentControls
         case .code:
             codeConfig
+        }
+    }
+
+    /// Generic per-block debug runner (all kinds except code, which has its own Run above).
+    @ViewBuilder
+    private var debugSection: some View {
+        if block.kind != .code {
+            Divider().overlay(DS.borderSoft)
+            Text("Debug — run just this block").font(DS.Font.caption).foregroundStyle(DS.textSecondary)
+            labeledEditor("Debug input (stands in for the previous block's output)", text: $debugInput, minHeight: 60)
+            HStack(spacing: DS.space3) {
+                if appState.debugRunningId == block.id {
+                    Button { appState.cancelDebugRun() } label: { Label("Cancel", systemImage: "stop.fill") }
+                        .buttonStyle(.borderless).foregroundStyle(DS.danger)
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button { appState.debugRunBlock(block, workflow: workflow, input: debugInput) } label: {
+                        Label("Run block", systemImage: "play.fill")
+                    }.buttonStyle(.borderless)
+                }
+                Spacer()
+            }
+            if let out = appState.debugOutput[block.id], !out.isEmpty {
+                ScrollView {
+                    OutputContent(text: out, prose: block.kind != .createTickets)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 260)
+                .padding(DS.space2)
+                .background(RoundedRectangle(cornerRadius: DS.radius).fill(DS.insetBG))
+            }
         }
     }
 
@@ -378,11 +417,11 @@ private struct BlockEditor: View {
             } label: { Label("Validate", systemImage: "checkmark.seal") }
                 .buttonStyle(.borderless).disabled(block.config.code.isEmpty || thinking)
 
-            if appState.codeBlockRunningId == block.id {
-                Button { appState.cancelCodeBlock() } label: { Label("Cancel", systemImage: "stop.fill") }
+            if appState.debugRunningId == block.id {
+                Button { appState.cancelDebugRun() } label: { Label("Cancel", systemImage: "stop.fill") }
                     .buttonStyle(.borderless).foregroundStyle(DS.danger)
             } else {
-                Button { appState.runCodeBlock(block, repoIds: repoIds) } label: { Label("Run", systemImage: "play.fill") }
+                Button { appState.debugRunBlock(block, workflow: workflow, input: block.config.sampleInput) } label: { Label("Run", systemImage: "play.fill") }
                     .buttonStyle(.borderless).disabled(block.config.code.isEmpty)
             }
 
@@ -401,7 +440,7 @@ private struct BlockEditor: View {
 
         labeledField("Sample stdin (for Run)", text: $block.config.sampleInput)
 
-        if let out = appState.codeBlockOutput[block.id], !out.isEmpty {
+        if let out = appState.debugOutput[block.id], !out.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Run output").font(DS.Font.caption).foregroundStyle(DS.textSecondary)
                 ScrollView {
