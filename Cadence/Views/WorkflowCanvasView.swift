@@ -53,6 +53,7 @@ struct WorkflowCanvasView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .coordinateSpace(.named(screenSpace))
             .clipped()
+            .background(TrackpadGestures(pan: $pan, zoom: $zoom, zoomRange: zoomMin...zoomMax))
             .overlay(alignment: .bottomLeading) { hintPill.padding(16) }
             .overlay(alignment: .bottomTrailing) { zoomCluster(size: geo.size).padding(16) }
             .onAppear { fitIfNeeded(geo.size) }
