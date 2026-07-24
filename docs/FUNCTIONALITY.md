@@ -2,17 +2,26 @@
 
 What each part of Cadence *does*. No UI/CSS talk. Just the mechanics behind every panel and feature.
 
+> **Architecture note (current).** Cadence no longer uses a Kuzu graph DB, the `Helpers/` Python
+> subprocess, or an MCP server — those were removed. State is plain files on disk: `IssueStore`
+> (`issues/<ID>/*.md`), `RepoRegistry` (`repos.json`), workflows under `workflows/<ID>/`, config in
+> `config.json` — see `Services/CadencePaths.swift`. The Claude agent runs via the `claude -p` CLI
+> with native Read/Grep/Glob/`Bash(git …)` tools scoped by `--add-dir` (no MCP). The UI is
+> canvas-driven (the chat rail was removed) and workflows are node-based (see `WORKFLOWS.md`).
+> Sections below that say "Kuzu"/"MCP"/"Helpers" describe the superseded internals; the behaviour
+> they describe (tickets, review/approve, digest) is largely unchanged.
+
 ---
 
 ## 1. What Cadence is (in one paragraph)
 
-A personal sprint dashboard for a single dev on a 2-week Linear-style cadence. Every ticket, code change, and finding lives in one Kuzu graph on disk. An MCP-driven Claude ReAct agent reads that graph to help you plan, expand tickets, index repos, and draft daily standup updates — always with human preview/approve before mutations. Data survives quit/relaunch. No external cloud DB, no API-key billing (uses your Claude subscription CLI).
+A personal sprint dashboard for a single dev on a 2-week Linear-style cadence. Every ticket, exploration, and finding lives as plain files on disk. A Claude agent (via the `claude -p` CLI, with native Read/Grep/Glob/`git` tools scoped to your repos) helps you plan, expand tickets, index repos, and draft daily standup updates — always with human preview/approve before mutations. Data survives quit/relaunch. No external cloud DB, no API-key billing (uses your Claude subscription CLI).
 
 ---
 
 ## 2. Core concepts (the nouns)
 
-These are the node types stored in Kuzu. Everything else in the app is a view onto them.
+These are the core models, persisted as files on disk. Everything else in the app is a view onto them.
 
 | Node | Represents | Key fields |
 |---|---|---|

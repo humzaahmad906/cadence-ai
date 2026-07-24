@@ -1,6 +1,14 @@
-# Cadence — Application Flow (chat-first)
+# Cadence — Application Flow
 
-How Cadence should *work* as a single conversational surface. The eight routes go away as places you navigate to; they become things the agent surfaces inside one flow. All the machinery in `FUNCTIONALITY.md` stays — Kuzu graph, MCP agent, propose/approve, stale detection, digest, dedupe — but it runs in the background and appears only when a step needs it.
+> **Updated.** This described an aspirational "chat-first" surface; the shipped app is
+> **canvas-driven** (the left chat rail was removed) with a node-based workflow builder (see
+> `WORKFLOWS.md`). Storage is plain files on disk (no Kuzu); the agent runs via the `claude -p` CLI
+> with native repo tools (no MCP). The flow below is still broadly how a sprint moves through the
+> app — read "Kuzu/MCP" as "the filesystem store / the CLI agent".
+
+How Cadence works as you move a sprint through it. The machinery in `FUNCTIONALITY.md` — the
+filesystem store, the CLI agent, propose/approve, stale detection, digest, dedupe — runs in the
+background and appears only when a step needs it.
 
 > Scope: this is the *flow*, not a UI/CSS spec. It answers "what happens, in what order, and where does it show up."
 
