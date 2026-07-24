@@ -8,7 +8,6 @@ final class AppState: ObservableObject {
     @Published var currentSprint: Sprint?
     @Published var projects: [Project] = []
     @Published var showPasteSprint = false
-    @Published var showDigestPreview = false
     @Published var digestDraft: String = ""
     @Published var selectedTicketId: String?
     @Published var conversations: [Conversation] = []
@@ -74,6 +73,12 @@ final class AppState: ObservableObject {
     let store = IssueStore()
     let repoRegistry = RepoRegistry()
     let claude = ClaudeBridge()
+    let workflowStore = WorkflowStore()
+    lazy var runner = WorkflowRunner(appState: self)
+
+    // Composable workflows (block-based). See Models/Workflow.swift + Services/WorkflowRunner.swift.
+    @Published var workflows: [Workflow] = []
+    @Published var activeRun: WorkflowRun?
 
     init() {
         self.conversations = ChatStore.loadConversations()
@@ -217,7 +222,7 @@ final class AppState: ObservableObject {
     }
 
     /// Returns absolute paths for a set of repo IDs — used to grant --add-dir access.
-    private func repoPaths(for repoIds: [String]) -> [String] {
+    func repoPaths(for repoIds: [String]) -> [String] {
         repos.filter { repoIds.contains($0.id) }.map { $0.path }
     }
 
@@ -415,15 +420,16 @@ final class AppState: ObservableObject {
         wizard = w
     }
 
-    func generateDescriptionForCurrent() async {
-        guard let w = wizard, w.index < w.drafts.count else { return }
-        let draft = w.drafts[w.index]
+    /// Shared "description writer" agent, reused by the wizard AND the workflow `createDescription`
+    /// block. Explores the scoped repos and returns (exploration, description) markdown. Manages
+    /// the agent status indicators itself.
+    func descriptionAgent(taskTitle: String, sprintName: String, repoIds: [String], branches: [String: String] = [:]) async throws -> (exploration: String, description: String) {
         agentStart()
         defer { agentStop() }
 
-        let repoBlock = repos.filter { w.repoIds.contains($0.id) }
+        let repoBlock = repos.filter { repoIds.contains($0.id) }
             .map { r -> String in
-                let br = w.branch(forRepo: r.id, taskIdx: w.index)
+                let br = branches[r.id] ?? ""
                 return "\(r.id)|\(r.name)|\(r.path)|branch=\(br.isEmpty ? "(default)" : br)"
             }
             .joined(separator: "\n")
@@ -446,46 +452,36 @@ final class AppState: ObservableObject {
         """
 
         let userTurn = """
-        TASK: \(draft.title)
-        SPRINT: \(w.sprintName)
+        TASK: \(taskTitle)
+        SPRINT: \(sprintName)
 
         REPOS (paths given so you can Read/Grep/Glob directly):
-        \(repoBlock)
+        \(repoBlock.isEmpty ? "(none)" : repoBlock)
         """
 
-        do {
-            let obj = try await claude.promptAgentJSONStreaming(
-                userMessage: userTurn,
-                systemPrompt: systemPrompt,
-                onToolUse: { [weak self] name in
-                    guard let self else { return }
-                    await MainActor.run { self.agentToolCalled(name) }
-                },
-                addDirs: repoPaths(for: w.repoIds),
-                timeout: 360
-            )
-            if let dict = obj as? [String: Any] {
-                if let desc = dict["description"] as? String {
-                    updateWizardDraft { $0.description = desc }
-                }
-                if let exploration = dict["exploration"] as? String {
-                    store.writeExploration(id: draft.id, phase: "description", markdown: exploration)
-                }
-            }
-        } catch {
-            addAmbient(AmbientEvent(kind: .error, text: "Description failed: \(error.localizedDescription)", at: Date(), target: nil))
-        }
+        let obj = try await claude.promptAgentJSONStreaming(
+            userMessage: userTurn,
+            systemPrompt: systemPrompt,
+            onToolUse: { [weak self] name in
+                guard let self else { return }
+                await MainActor.run { self.agentToolCalled(name) }
+            },
+            addDirs: repoPaths(for: repoIds),
+            timeout: 360
+        )
+        let dict = obj as? [String: Any] ?? [:]
+        return (dict["exploration"] as? String ?? "", dict["description"] as? String ?? "")
     }
 
-    func generateSolutionForCurrent() async {
-        guard let w = wizard, w.index < w.drafts.count else { return }
-        let draft = w.drafts[w.index]
+    /// Shared "solution designer" agent, reused by the wizard AND the workflow `createSolution`
+    /// block. Returns (exploration, solution) markdown. Manages the agent status indicators itself.
+    func solutionAgent(taskTitle: String, description: String, repoIds: [String], branches: [String: String] = [:]) async throws -> (exploration: String, solution: String) {
         agentStart()
         defer { agentStop() }
 
-        let repoBlock = repos.filter { w.repoIds.contains($0.id) }
+        let repoBlock = repos.filter { repoIds.contains($0.id) }
             .map { r -> String in
-                let br = w.branch(forRepo: r.id, taskIdx: w.index)
+                let br = branches[r.id] ?? ""
                 return "\(r.id)|\(r.name)|\(r.path)|branch=\(br.isEmpty ? "(default)" : br)"
             }
             .joined(separator: "\n")
@@ -508,32 +504,59 @@ final class AppState: ObservableObject {
         """
 
         let userTurn = """
-        TASK: \(draft.title)
+        TASK: \(taskTitle)
         DESCRIPTION:
-        \(draft.description)
+        \(description)
 
         REPOS (paths given for direct Read/Grep/Glob):
-        \(repoBlock)
+        \(repoBlock.isEmpty ? "(none)" : repoBlock)
         """
 
+        let obj = try await claude.promptAgentJSONStreaming(
+            userMessage: userTurn,
+            systemPrompt: systemPrompt,
+            onToolUse: { [weak self] name in
+                guard let self else { return }
+                await MainActor.run { self.agentToolCalled(name) }
+            },
+            addDirs: repoPaths(for: repoIds),
+            timeout: 420
+        )
+        let dict = obj as? [String: Any] ?? [:]
+        return (dict["exploration"] as? String ?? "", dict["solution"] as? String ?? "")
+    }
+
+    /// Per-task branch map for the current wizard task (repoId -> effective branch).
+    private func wizardBranches(_ w: WizardSession) -> [String: String] {
+        var branches: [String: String] = [:]
+        for rid in w.repoIds {
+            let b = w.branch(forRepo: rid, taskIdx: w.index)
+            if !b.isEmpty { branches[rid] = b }
+        }
+        return branches
+    }
+
+    func generateDescriptionForCurrent() async {
+        guard let w = wizard, w.index < w.drafts.count else { return }
+        let draft = w.drafts[w.index]
         do {
-            let obj = try await claude.promptAgentJSONStreaming(
-                userMessage: userTurn,
-                systemPrompt: systemPrompt,
-                onToolUse: { [weak self] name in
-                    guard let self else { return }
-                    await MainActor.run { self.agentToolCalled(name) }
-                },
-                addDirs: repoPaths(for: w.repoIds),
-                timeout: 420
-            )
-            guard let dict = obj as? [String: Any] else { return }
-            if let s = dict["solution"] as? String {
-                updateWizardDraft { $0.solution = s }
-            }
-            if let exploration = dict["exploration"] as? String {
-                store.writeExploration(id: draft.id, phase: "solution", markdown: exploration)
-            }
+            let result = try await descriptionAgent(taskTitle: draft.title, sprintName: w.sprintName,
+                                                    repoIds: w.repoIds, branches: wizardBranches(w))
+            if !result.description.isEmpty { updateWizardDraft { $0.description = result.description } }
+            if !result.exploration.isEmpty { store.writeExploration(id: draft.id, phase: "description", markdown: result.exploration) }
+        } catch {
+            addAmbient(AmbientEvent(kind: .error, text: "Description failed: \(error.localizedDescription)", at: Date(), target: nil))
+        }
+    }
+
+    func generateSolutionForCurrent() async {
+        guard let w = wizard, w.index < w.drafts.count else { return }
+        let draft = w.drafts[w.index]
+        do {
+            let result = try await solutionAgent(taskTitle: draft.title, description: draft.description,
+                                                 repoIds: w.repoIds, branches: wizardBranches(w))
+            if !result.solution.isEmpty { updateWizardDraft { $0.solution = result.solution } }
+            if !result.exploration.isEmpty { store.writeExploration(id: draft.id, phase: "solution", markdown: result.exploration) }
         } catch {
             addAmbient(AmbientEvent(kind: .error, text: "Solution failed: \(error.localizedDescription)", at: Date(), target: nil))
         }
@@ -767,6 +790,7 @@ final class AppState: ObservableObject {
     func bootstrap() async {
         do {
             bootstrapError = nil
+            seedWorkflowsIfNeeded()
             await refresh()
             // Pick landing artifact based on state
             if !pendingDrafts.isEmpty {
@@ -951,7 +975,71 @@ final class AppState: ObservableObject {
     func refresh() async {
         tickets = store.list()
         repos = repoRegistry.list()
+        workflows = workflowStore.list()
         lastRefresh = Date()
+    }
+
+    // MARK: workflows
+
+    /// Seed the built-in templates as real, editable workflows on first run.
+    func seedWorkflowsIfNeeded() {
+        guard workflowStore.list().isEmpty else { return }
+        for template in Workflow.templates() {
+            try? workflowStore.save(template)
+        }
+    }
+
+    func loadWorkflows() {
+        workflows = workflowStore.list()
+    }
+
+    /// Persist a workflow (create or update) and refresh the in-memory list.
+    func saveWorkflow(_ workflow: Workflow) {
+        var w = workflow
+        w.updatedAt = Date()
+        do {
+            try workflowStore.save(w)
+            loadWorkflows()
+        } catch {
+            addAmbient(AmbientEvent(kind: .error, text: "Save workflow failed: \(error.localizedDescription)", at: Date(), target: nil))
+        }
+    }
+
+    /// Create a new workflow from a template (or a blank one) and open the builder.
+    func createWorkflow(from template: Workflow) {
+        // Fresh identity + timestamps so templates can be instantiated repeatedly.
+        var w = template
+        w.id = UUID().uuidString
+        w.createdAt = Date()
+        w.updatedAt = Date()
+        saveWorkflow(w)
+        setArtifact(.workflowBuilder(id: w.id))
+    }
+
+    func createBlankWorkflow() {
+        let w = Workflow(name: "New workflow", summary: "", blocks: [], repoIds: [])
+        saveWorkflow(w)
+        setArtifact(.workflowBuilder(id: w.id))
+    }
+
+    func deleteWorkflow(_ id: String) {
+        try? workflowStore.delete(id)
+        loadWorkflows()
+        if case .workflowBuilder(let bid) = currentArtifact, bid == id { setArtifact(.workflows) }
+    }
+
+    /// Kick off a workflow run. `initialInput` seeds the first block; `navigate` controls whether
+    /// the canvas jumps to the live run view (the digest path passes `false`).
+    func runWorkflow(_ id: String, initialInput: String = "", navigate: Bool = true) async {
+        guard let wf = workflows.first(where: { $0.id == id }) ?? workflowStore.load(id) else {
+            addAmbient(AmbientEvent(kind: .error, text: "Workflow not found.", at: Date(), target: nil))
+            return
+        }
+        await runner.start(workflow: wf, initialInput: initialInput, navigate: navigate)
+    }
+
+    func resumeReview(approve: Bool, editedOutput: String?) async {
+        await runner.resumeReview(approve: approve, editedOutput: editedOutput)
     }
 
     func moveTicket(_ ticket: Ticket, to status: TicketStatus) async {
@@ -985,10 +1073,20 @@ final class AppState: ObservableObject {
         } catch { print("save failed: \(error)") }
     }
 
-    /// Digest is not available in the file-based build yet.
+    /// Generate today's digest by running the built-in "Daily Digest" workflow. The workflow's
+    /// summarize block persists the result through `persistDigest`.
     func generateDigestDraft() async {
-        persistDigest("Daily digest — coming soon.")
-        showDigestPreview = true
+        seedWorkflowsIfNeeded()
+        loadWorkflows()
+        let digest = workflows.first(where: { $0.name == "Daily Digest" }) ?? {
+            let t = Workflow.dailyDigestTemplate()
+            try? workflowStore.save(t)
+            loadWorkflows()
+            return t
+        }()
+        // Stay on the Digest tab — the summarize block persists via persistDigest, which
+        // DigestSectionView renders, so there's no need to jump to the run canvas.
+        await runWorkflow(digest.id, navigate: false)
     }
 
     func copyDigestNow() async {
