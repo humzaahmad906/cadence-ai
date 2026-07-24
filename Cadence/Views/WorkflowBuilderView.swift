@@ -8,6 +8,7 @@ struct WorkflowBuilderView: View {
     @State private var draft: Workflow?
     @State private var loaded = false
     @State private var debugMode = false
+    @State private var selectedBlockId: UUID?
 
     var body: some View {
         Group {
@@ -37,19 +38,66 @@ struct WorkflowBuilderView: View {
     }
 
     private var editor: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: DS.space5) {
-                header
-                metaCard
-                repoPicker
-                blocksSection
-                addBlockRow
+        VStack(spacing: 0) {
+            header
+                .padding(DS.space4)
+                .background(DS.cardBG)
+                .overlay(Rectangle().fill(DS.border).frame(height: 1), alignment: .bottom)
+            HStack(spacing: 0) {
+                WorkflowCanvasView(workflow: draftBinding, selectedBlockId: $selectedBlockId)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                inspector
+                    .frame(width: 380)
+                    .frame(maxHeight: .infinity)
+                    .background(DS.cardBG)
+                    .overlay(Rectangle().fill(DS.border).frame(width: 1), alignment: .leading)
             }
-            .padding(DS.space6)
-            .frame(maxWidth: 900, alignment: .leading)
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(DS.contentBG)
+    }
+
+    private var draftBinding: Binding<Workflow> {
+        Binding(get: { draft ?? Workflow(name: "") }, set: { draft = $0 })
+    }
+
+    private var selectedIndex: Int? {
+        guard let id = selectedBlockId else { return nil }
+        return draft?.blocks.firstIndex(where: { $0.id == id })
+    }
+
+    /// Right panel: the selected node's config, or the workflow's own settings when nothing is selected.
+    @ViewBuilder
+    private var inspector: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: DS.space4) {
+                if let idx = selectedIndex {
+                    HStack {
+                        Text("Block").font(DS.Font.title)
+                        Spacer()
+                        Button { selectedBlockId = nil } label: { Image(systemName: "xmark") }
+                            .buttonStyle(.borderless).foregroundStyle(DS.textTertiary)
+                    }
+                    BlockEditor(
+                        block: blockBinding(idx),
+                        index: idx,
+                        count: draft?.blocks.count ?? 0,
+                        workflow: draft ?? Workflow(name: ""),
+                        debugMode: debugMode,
+                        onMoveUp: { move(idx, by: -1) },
+                        onMoveDown: { move(idx, by: 1) },
+                        onDelete: { removeBlock(idx); selectedBlockId = nil }
+                    )
+                } else {
+                    Text("Workflow").font(DS.Font.title)
+                    metaCard
+                    repoPicker
+                    Text("Tap a node to edit it. Add blocks from the toolbar; drag nodes between lanes.")
+                        .font(DS.Font.caption).foregroundStyle(DS.textTertiary)
+                }
+            }
+            .padding(DS.space4)
+        }
     }
 
     private var header: some View {
@@ -58,6 +106,7 @@ struct WorkflowBuilderView: View {
                 Label("Workflows", systemImage: "arrow.left")
             }.buttonStyle(SecondaryButtonStyle())
             Spacer()
+            addBlockRow
             Toggle(isOn: $debugMode) { Label("Debug", systemImage: "ladybug") }
                 .toggleStyle(.button)
                 .help("Show a per-block runner so you can test each block in isolation")
@@ -125,29 +174,6 @@ struct WorkflowBuilderView: View {
         .buttonStyle(.plain)
     }
 
-    private var blocksSection: some View {
-        VStack(alignment: .leading, spacing: DS.space3) {
-            Text("Blocks").font(DS.Font.title)
-            if let d = draft, d.blocks.isEmpty {
-                Card {
-                    Text("No blocks yet. Add one below.").font(DS.Font.body).foregroundStyle(DS.textSecondary)
-                }
-            }
-            ForEach(Array((draft?.blocks ?? []).enumerated()), id: \.element.id) { idx, _ in
-                BlockEditor(
-                    block: blockBinding(idx),
-                    index: idx,
-                    count: draft?.blocks.count ?? 0,
-                    workflow: draft ?? Workflow(name: ""),
-                    debugMode: debugMode,
-                    onMoveUp: { move(idx, by: -1) },
-                    onMoveDown: { move(idx, by: 1) },
-                    onDelete: { removeBlock(idx) }
-                )
-            }
-        }
-    }
-
     private var addBlockRow: some View {
         Menu {
             ForEach(WorkflowBlockKind.allCases) { kind in
@@ -190,7 +216,9 @@ struct WorkflowBuilderView: View {
 
     private func addBlock(_ kind: WorkflowBlockKind) {
         guard draft != nil else { return }
-        draft!.blocks.append(WorkflowBlock(kind: kind, title: kind.label))
+        let block = WorkflowBlock(kind: kind, title: kind.label)
+        draft!.blocks.append(block)
+        selectedBlockId = block.id
     }
 
     private func removeBlock(_ idx: Int) {

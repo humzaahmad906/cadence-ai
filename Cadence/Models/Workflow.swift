@@ -107,6 +107,40 @@ enum ViewerTarget: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// SIPOC-style lane a block sits in on the workflow canvas.
+enum WorkflowLane: String, Codable, CaseIterable, Identifiable {
+    case suppliers, inputs, process, outputs, customers
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .suppliers: return "Suppliers"
+        case .inputs:    return "Inputs"
+        case .process:   return "Process"
+        case .outputs:   return "Outputs"
+        case .customers: return "Customers"
+        }
+    }
+    /// Default lane for a block kind (mapping A: auto-by-kind).
+    static func `default`(for kind: WorkflowBlockKind) -> WorkflowLane {
+        switch kind {
+        case .input:                  return .inputs
+        case .createTickets, .viewer: return .outputs
+        default:                      return .process
+        }
+    }
+}
+
+/// A directed connection between two blocks (source output → target input). Enables fan-out /
+/// fan-in — multiple inputs and outputs — beyond the old linear chain.
+struct WorkflowEdge: Codable, Hashable, Identifiable {
+    var id: UUID
+    var from: UUID
+    var to: UUID
+    init(id: UUID = UUID(), from: UUID, to: UUID) {
+        self.id = id; self.from = from; self.to = to
+    }
+}
+
 /// Kind-specific configuration. All fields optional/defaulted so the struct serializes
 /// flatly and forward-compatibly. Templates may reference {{input}} (previous block output)
 /// and {{repos}} (a description of the scoped repos) inside prompt templates.
@@ -167,6 +201,11 @@ struct WorkflowBlockConfig: Codable, Hashable {
     /// agent blocks: effort level passed to the claude CLI (--effort). Empty = CLI default.
     var effort: String = ""
 
+    /// canvas: node position; lane raw value (empty = auto by kind via WorkflowLane.default).
+    var x: Double = 0
+    var y: Double = 0
+    var lane: String = ""
+
     init() {}
 
     // Custom decoder so new fields are forward/backward compatible: a workflow.json written by an
@@ -177,6 +216,7 @@ struct WorkflowBlockConfig: Codable, Hashable {
         case docPath, question, sinceRef
         case code, interpreter, inputDesc, outputDesc, codeIntent, sampleInput, validated
         case inputText, useRepos, model, effort
+        case x, y, lane
     }
 
     init(from decoder: Decoder) throws {
@@ -207,6 +247,9 @@ struct WorkflowBlockConfig: Codable, Hashable {
         useRepos = bool(.useRepos, true)
         model = str(.model)
         effort = str(.effort)
+        x = (try? c.decode(Double.self, forKey: .x)) ?? 0
+        y = (try? c.decode(Double.self, forKey: .y)) ?? 0
+        lane = str(.lane)
     }
 }
 
@@ -233,6 +276,7 @@ struct Workflow: Codable, Identifiable, Hashable {
     var summary: String
     var blocks: [WorkflowBlock]
     var repoIds: [String]
+    var edges: [WorkflowEdge]
     var createdAt: Date
     var updatedAt: Date
 
@@ -241,6 +285,7 @@ struct Workflow: Codable, Identifiable, Hashable {
          summary: String = "",
          blocks: [WorkflowBlock] = [],
          repoIds: [String] = [],
+         edges: [WorkflowEdge] = [],
          createdAt: Date = Date(),
          updatedAt: Date = Date()) {
         self.id = id
@@ -248,8 +293,26 @@ struct Workflow: Codable, Identifiable, Hashable {
         self.summary = summary
         self.blocks = blocks
         self.repoIds = repoIds
+        self.edges = edges
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    // Tolerant decoder so adding fields (e.g. edges) doesn't break workflow.json written by
+    // an older build.
+    private enum CodingKeys: String, CodingKey {
+        case id, name, summary, blocks, repoIds, edges, createdAt, updatedAt
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = (try? c.decode(String.self, forKey: .name)) ?? "Workflow"
+        summary = (try? c.decode(String.self, forKey: .summary)) ?? ""
+        blocks = (try? c.decode([WorkflowBlock].self, forKey: .blocks)) ?? []
+        repoIds = (try? c.decode([String].self, forKey: .repoIds)) ?? []
+        edges = (try? c.decode([WorkflowEdge].self, forKey: .edges)) ?? []
+        createdAt = (try? c.decode(Date.self, forKey: .createdAt)) ?? Date()
+        updatedAt = (try? c.decode(Date.self, forKey: .updatedAt)) ?? Date()
     }
 }
 
