@@ -76,6 +76,15 @@ enum WorkflowBlockKind: String, Codable, CaseIterable, Identifiable {
         case .repoReport:        return "Summarize recent repo activity (commits, branches, churn) via git."
         }
     }
+
+    /// Whether this block, as the first in a run, consumes the run's initial input (so the user
+    /// should be prompted for a starting value before the run begins).
+    var consumesInitialInput: Bool {
+        switch self {
+        case .createDescription, .agentPrompt, .createTickets: return true
+        case .createSolution, .manualReview, .summarize, .viewer, .docQA, .repoReport: return false
+        }
+    }
 }
 
 /// What a `viewer` block renders.
@@ -129,6 +138,34 @@ struct WorkflowBlockConfig: Codable, Hashable {
     var sinceRef: String = ""
 
     init() {}
+
+    enum CodingKeys: String, CodingKey {
+        case systemPrompt, promptTemplate, expectJSON, defaultPriority, defaultStatus
+        case reviewInstructions, heading, persistAsDigest, viewerTarget, ticketId
+        case docPath, question, sinceRef
+    }
+}
+
+// Hand-written decoding so older/newer JSON (missing or extra keys) decodes gracefully;
+// encoding stays synthesized against the same CodingKeys. See L1 in the review.
+extension WorkflowBlockConfig {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init()
+        systemPrompt       = try c.decodeIfPresent(String.self, forKey: .systemPrompt) ?? systemPrompt
+        promptTemplate     = try c.decodeIfPresent(String.self, forKey: .promptTemplate) ?? promptTemplate
+        expectJSON         = try c.decodeIfPresent(Bool.self, forKey: .expectJSON) ?? expectJSON
+        defaultPriority    = try c.decodeIfPresent(String.self, forKey: .defaultPriority) ?? defaultPriority
+        defaultStatus      = try c.decodeIfPresent(String.self, forKey: .defaultStatus) ?? defaultStatus
+        reviewInstructions = try c.decodeIfPresent(String.self, forKey: .reviewInstructions) ?? reviewInstructions
+        heading            = try c.decodeIfPresent(String.self, forKey: .heading) ?? heading
+        persistAsDigest    = try c.decodeIfPresent(Bool.self, forKey: .persistAsDigest) ?? persistAsDigest
+        viewerTarget       = try c.decodeIfPresent(String.self, forKey: .viewerTarget) ?? viewerTarget
+        ticketId           = try c.decodeIfPresent(String.self, forKey: .ticketId) ?? ticketId
+        docPath            = try c.decodeIfPresent(String.self, forKey: .docPath) ?? docPath
+        question           = try c.decodeIfPresent(String.self, forKey: .question) ?? question
+        sinceRef           = try c.decodeIfPresent(String.self, forKey: .sinceRef) ?? sinceRef
+    }
 }
 
 /// One ordered step in a workflow.
@@ -172,6 +209,12 @@ struct Workflow: Codable, Identifiable, Hashable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
+
+    /// Whether a run should prompt the user for a starting input — true when the first block
+    /// consumes the run's initial input.
+    var firstBlockConsumesInput: Bool {
+        blocks.first?.kind.consumesInitialInput ?? false
+    }
 }
 
 // MARK: - Run state
@@ -189,11 +232,35 @@ struct BlockRunState: Codable, Identifiable, Hashable {
     var id: UUID
     var kind: WorkflowBlockKind
     var title: String
+    /// The source block's configuration, carried into the run so the run view can render the
+    /// configured behaviour (e.g. manualReview's `reviewInstructions`).
+    var config: WorkflowBlockConfig
     var status: BlockRunStatus
     var output: String
     var error: String?
     var startedAt: Date?
     var finishedAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, title, config, status, output, error, startedAt, finishedAt
+    }
+}
+
+// Hand-written decoding for forward/backward-compat (config is a newer field); the memberwise
+// init stays available because this initializer lives in an extension.
+extension BlockRunState {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id         = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        kind       = try c.decodeIfPresent(WorkflowBlockKind.self, forKey: .kind) ?? .agentPrompt
+        title      = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        config     = try c.decodeIfPresent(WorkflowBlockConfig.self, forKey: .config) ?? WorkflowBlockConfig()
+        status     = try c.decodeIfPresent(BlockRunStatus.self, forKey: .status) ?? .pending
+        output     = try c.decodeIfPresent(String.self, forKey: .output) ?? ""
+        error      = try c.decodeIfPresent(String.self, forKey: .error)
+        startedAt  = try c.decodeIfPresent(Date.self, forKey: .startedAt)
+        finishedAt = try c.decodeIfPresent(Date.self, forKey: .finishedAt)
+    }
 }
 
 /// A single execution of a workflow. Persisted under workflows/<workflowID>/runs/<runID>.json.
@@ -213,13 +280,32 @@ struct WorkflowRun: Codable, Identifiable, Hashable {
         self.workflowName = workflow.name
         self.status = .pending
         self.blocks = workflow.blocks.map {
-            BlockRunState(id: $0.id, kind: $0.kind, title: $0.title,
+            BlockRunState(id: $0.id, kind: $0.kind, title: $0.title, config: $0.config,
                           status: .pending, output: "", error: nil,
                           startedAt: nil, finishedAt: nil)
         }
         self.currentIndex = 0
         self.createdAt = Date()
         self.updatedAt = Date()
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, workflowId, workflowName, status, blocks, currentIndex, createdAt, updatedAt
+    }
+}
+
+// Hand-written decoding so a run persisted by an older/newer build decodes gracefully.
+extension WorkflowRun {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id           = try c.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        workflowId   = try c.decodeIfPresent(String.self, forKey: .workflowId) ?? ""
+        workflowName = try c.decodeIfPresent(String.self, forKey: .workflowName) ?? ""
+        status       = try c.decodeIfPresent(RunStatus.self, forKey: .status) ?? .pending
+        blocks       = try c.decodeIfPresent([BlockRunState].self, forKey: .blocks) ?? []
+        currentIndex = try c.decodeIfPresent(Int.self, forKey: .currentIndex) ?? 0
+        createdAt    = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        updatedAt    = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
     }
 }
 

@@ -7,6 +7,7 @@ struct WorkflowBuilderView: View {
 
     @State private var draft: Workflow?
     @State private var loaded = false
+    @State private var showStartInput = false
 
     var body: some View {
         Group {
@@ -14,6 +15,11 @@ struct WorkflowBuilderView: View {
                 editor
             } else {
                 notFound
+            }
+        }
+        .sheet(isPresented: $showStartInput) {
+            WorkflowStartInputSheet(workflowName: draft?.name ?? "workflow") { input in
+                Task { await appState.runWorkflow(workflowId, initialInput: input) }
             }
         }
         .onAppear {
@@ -59,7 +65,7 @@ struct WorkflowBuilderView: View {
             Spacer()
             Button { save() } label: { Label("Save", systemImage: "checkmark") }
                 .buttonStyle(SecondaryButtonStyle())
-            Button { save(); Task { await appState.runWorkflow(workflowId) } } label: {
+            Button { save(); startRun() } label: {
                 Label("Save & run", systemImage: "play.fill")
             }
             .buttonStyle(PrimaryButtonStyle())
@@ -171,7 +177,12 @@ struct WorkflowBuilderView: View {
 
     private func blockBinding(_ idx: Int) -> Binding<WorkflowBlock> {
         Binding(
-            get: { draft?.blocks[idx] ?? WorkflowBlock(kind: .agentPrompt, title: "") },
+            get: {
+                guard let d = draft, idx >= 0, idx < d.blocks.count else {
+                    return WorkflowBlock(kind: .agentPrompt, title: "")
+                }
+                return d.blocks[idx]
+            },
             set: { if draft != nil, idx < draft!.blocks.count { draft!.blocks[idx] = $0 } }
         )
     }
@@ -202,6 +213,15 @@ struct WorkflowBuilderView: View {
     private func save() {
         guard let d = draft else { return }
         appState.saveWorkflow(d)
+    }
+
+    /// Prompt for a starting input first when the first block consumes it; otherwise run directly.
+    private func startRun() {
+        if draft?.firstBlockConsumesInput ?? false {
+            showStartInput = true
+        } else {
+            Task { await appState.runWorkflow(workflowId) }
+        }
     }
 }
 

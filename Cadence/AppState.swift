@@ -8,7 +8,6 @@ final class AppState: ObservableObject {
     @Published var currentSprint: Sprint?
     @Published var projects: [Project] = []
     @Published var showPasteSprint = false
-    @Published var showDigestPreview = false
     @Published var digestDraft: String = ""
     @Published var selectedTicketId: String?
     @Published var conversations: [Conversation] = []
@@ -1029,13 +1028,14 @@ final class AppState: ObservableObject {
         if case .workflowBuilder(let bid) = currentArtifact, bid == id { setArtifact(.workflows) }
     }
 
-    /// Kick off a workflow run. Navigates to the live run view.
-    func runWorkflow(_ id: String) async {
+    /// Kick off a workflow run. `initialInput` seeds the first block; `navigate` controls whether
+    /// the canvas jumps to the live run view (the digest path passes `false`).
+    func runWorkflow(_ id: String, initialInput: String = "", navigate: Bool = true) async {
         guard let wf = workflows.first(where: { $0.id == id }) ?? workflowStore.load(id) else {
             addAmbient(AmbientEvent(kind: .error, text: "Workflow not found.", at: Date(), target: nil))
             return
         }
-        await runner.start(workflow: wf)
+        await runner.start(workflow: wf, initialInput: initialInput, navigate: navigate)
     }
 
     func resumeReview(approve: Bool, editedOutput: String?) async {
@@ -1084,7 +1084,9 @@ final class AppState: ObservableObject {
             loadWorkflows()
             return t
         }()
-        await runWorkflow(digest.id)
+        // Stay on the Digest tab — the summarize block persists via persistDigest, which
+        // DigestSectionView renders, so there's no need to jump to the run canvas.
+        await runWorkflow(digest.id, navigate: false)
     }
 
     func copyDigestNow() async {

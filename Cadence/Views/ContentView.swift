@@ -28,6 +28,5 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $appState.showPasteSprint) { PasteSprintView() }
-        .sheet(isPresented: $appState.showDigestPreview) { DigestView() }
     }
 }

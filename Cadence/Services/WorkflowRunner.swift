@@ -16,14 +16,16 @@ final class WorkflowRunner {
 
     // MARK: entry points
 
-    /// Build a fresh run for `workflow`, navigate to it, and execute from the first block.
-    func start(workflow: Workflow) async {
+    /// Build a fresh run for `workflow` and execute from the first block. `initialInput` seeds the
+    /// first block's input (e.g. a task title or sprint description). When `navigate` is true the
+    /// canvas jumps to the live run view; the digest path passes `false` to stay put.
+    func start(workflow: Workflow, initialInput: String = "", navigate: Bool = true) async {
         self.workflow = workflow
         let run = WorkflowRun(workflow: workflow)
         appState.activeRun = run
         appState.workflowStore.saveRun(run)
-        appState.setArtifact(.workflowRun(id: run.id))
-        await runFrom(0)
+        if navigate { appState.setArtifact(.workflowRun(id: run.id)) }
+        await runFrom(0, initialInput: initialInput)
     }
 
     /// Resume a run paused on a block that awaits the user. On approve, the (optionally edited)
@@ -55,13 +57,13 @@ final class WorkflowRunner {
 
     // MARK: engine
 
-    private func runFrom(_ index: Int) async {
+    private func runFrom(_ index: Int, initialInput: String = "") async {
         guard let wf = workflow, var run = appState.activeRun else { return }
         run.status = .running
         run.updatedAt = Date()
         appState.activeRun = run
 
-        var input = index > 0 && index - 1 < run.blocks.count ? run.blocks[index - 1].output : ""
+        var input = index > 0 && index - 1 < run.blocks.count ? run.blocks[index - 1].output : initialInput
         var i = index
 
         while i < wf.blocks.count {

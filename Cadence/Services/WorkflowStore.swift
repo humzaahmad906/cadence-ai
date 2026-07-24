@@ -87,6 +87,20 @@ final class WorkflowStore {
         return run
     }
 
+    /// Locate a persisted run by its id alone, scanning every workflow's runs folder. Used to
+    /// render a run whose workflow id isn't at hand (e.g. navigating to an inactive run).
+    func loadRun(_ runId: String) -> WorkflowRun? {
+        guard let dirs = try? fm.contentsOfDirectory(at: CadencePaths.workflowsDir,
+                                                     includingPropertiesForKeys: nil) else { return nil }
+        for dir in dirs {
+            let url = dir.appendingPathComponent("runs").appendingPathComponent("\(runId).json")
+            guard let data = try? Data(contentsOf: url),
+                  let run = try? Self.decoder.decode(WorkflowRun.self, from: data) else { continue }
+            return run
+        }
+        return nil
+    }
+
     /// Best-effort persistence of a run; called frequently as a run progresses.
     func saveRun(_ run: WorkflowRun) {
         try? fm.createDirectory(at: runsDir(run.workflowId), withIntermediateDirectories: true)

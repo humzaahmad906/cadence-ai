@@ -7,18 +7,32 @@ struct WorkflowRunView: View {
     let runId: String
 
     @State private var reviewText: String = ""
+    /// A persisted-but-inactive run loaded on demand so navigating to it renders read-only
+    /// instead of showing "no longer active".
+    @State private var fallbackRun: WorkflowRun?
 
+    /// The live active run when it matches this id, otherwise the read-only persisted fallback.
     private var run: WorkflowRun? {
-        guard let r = appState.activeRun, r.id == runId else { return nil }
-        return r
+        if let r = appState.activeRun, r.id == runId { return r }
+        return fallbackRun
+    }
+
+    /// True when we're showing a persisted run rather than the live active one.
+    private var isReadOnly: Bool {
+        appState.activeRun?.id != runId
     }
 
     var body: some View {
         Group {
             if let run = run {
-                content(run)
+                content(run, readOnly: isReadOnly)
             } else {
                 notFound
+            }
+        }
+        .onAppear {
+            if appState.activeRun?.id != runId, fallbackRun?.id != runId {
+                fallbackRun = appState.workflowStore.loadRun(runId)
             }
         }
     }
@@ -34,12 +48,12 @@ struct WorkflowRunView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func content(_ run: WorkflowRun) -> some View {
+    private func content(_ run: WorkflowRun, readOnly: Bool) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: DS.space4) {
                 header(run)
                 ForEach(Array(run.blocks.enumerated()), id: \.element.id) { idx, block in
-                    blockCard(run: run, index: idx, block: block)
+                    blockCard(run: run, index: idx, block: block, readOnly: readOnly)
                 }
             }
             .padding(DS.space6)
@@ -74,7 +88,7 @@ struct WorkflowRunView: View {
     }
 
     @ViewBuilder
-    private func blockCard(run: WorkflowRun, index: Int, block: BlockRunState) -> some View {
+    private func blockCard(run: WorkflowRun, index: Int, block: BlockRunState, readOnly: Bool) -> some View {
         Card(padding: DS.space4) {
             VStack(alignment: .leading, spacing: DS.space2) {
                 HStack(spacing: DS.space2) {
@@ -88,7 +102,7 @@ struct WorkflowRunView: View {
                     Text(err).font(DS.Font.caption).foregroundStyle(DS.danger)
                         .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 }
-                if block.status == .awaitingReview {
+                if block.status == .awaitingReview && !readOnly {
                     reviewControls(block)
                 } else if !block.output.isEmpty {
                     ScrollView {
@@ -108,10 +122,10 @@ struct WorkflowRunView: View {
     @ViewBuilder
     private func reviewControls(_ block: BlockRunState) -> some View {
         VStack(alignment: .leading, spacing: DS.space2) {
-            if !block.title.isEmpty {
-                Text("Review — edit if needed, then approve to continue.")
-                    .font(DS.Font.caption).foregroundStyle(DS.textSecondary)
-            }
+            let instructions = block.config.reviewInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+            Text(instructions.isEmpty ? "Review — edit if needed, then approve to continue." : instructions)
+                .font(DS.Font.caption).foregroundStyle(DS.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
             TextEditor(text: $reviewText)
                 .font(DS.Font.mono)
                 .scrollContentBackground(.hidden)

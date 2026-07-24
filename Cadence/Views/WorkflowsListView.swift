@@ -4,6 +4,10 @@ import SwiftUI
 struct WorkflowsListView: View {
     @EnvironmentObject var appState: AppState
 
+    // Computed once so ForEach identity in the "New from template" menu stays stable across
+    // re-renders (templates() mints fresh UUIDs on every call).
+    @State private var templates: [Workflow] = Workflow.templates()
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: DS.space5) {
@@ -38,7 +42,7 @@ struct WorkflowsListView: View {
 
     private var newMenu: some View {
         Menu {
-            ForEach(Workflow.templates()) { template in
+            ForEach(templates) { template in
                 Button {
                     appState.createWorkflow(from: template)
                 } label: {
@@ -77,6 +81,8 @@ private struct WorkflowCard: View {
     @EnvironmentObject var appState: AppState
     let workflow: Workflow
 
+    @State private var showStartInput = false
+
     var body: some View {
         Card(padding: DS.space4) {
             VStack(alignment: .leading, spacing: DS.space3) {
@@ -90,7 +96,7 @@ private struct WorkflowCard: View {
                     }
                     Spacer()
                     HStack(spacing: 8) {
-                        Button { Task { await appState.runWorkflow(workflow.id) } } label: {
+                        Button { startRun() } label: {
                             Label("Run", systemImage: "play.fill")
                         }
                         .buttonStyle(PrimaryButtonStyle())
@@ -129,6 +135,20 @@ private struct WorkflowCard: View {
                 }
                 .font(DS.Font.micro).foregroundStyle(DS.textTertiary)
             }
+        }
+        .sheet(isPresented: $showStartInput) {
+            WorkflowStartInputSheet(workflowName: workflow.name) { input in
+                Task { await appState.runWorkflow(workflow.id, initialInput: input) }
+            }
+        }
+    }
+
+    /// Prompt for a starting input first when the first block consumes it; otherwise run directly.
+    private func startRun() {
+        if workflow.firstBlockConsumesInput {
+            showStartInput = true
+        } else {
+            Task { await appState.runWorkflow(workflow.id) }
         }
     }
 }
