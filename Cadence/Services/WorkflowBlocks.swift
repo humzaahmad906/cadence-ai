@@ -12,8 +12,10 @@ import Foundation
 struct BlockRunContext {
     let appState: AppState
     let workflow: Workflow
-    /// Output of the previous block (empty for the first block).
+    /// Primary incoming value (the block's first input port; empty for a source block).
     let input: String
+    /// All named inputs gathered from incoming edges (port name → value).
+    var inputs: [String: String] = [:]
 }
 
 /// One block kind's behaviour.
@@ -94,10 +96,12 @@ enum AgentBlockKit {
         return stringify(obj)
     }
 
-    static func fill(_ template: String, input: String, repoBlock: String) -> String {
-        template
+    static func fill(_ template: String, input: String, repoBlock: String, inputs: [String: String] = [:]) -> String {
+        var s = template
             .replacingOccurrences(of: "{{input}}", with: input)
             .replacingOccurrences(of: "{{repos}}", with: repoBlock.isEmpty ? "(none)" : repoBlock)
+        for (key, value) in inputs { s = s.replacingOccurrences(of: "{{\(key)}}", with: value) }
+        return s
     }
 
     static func repoDescription(_ appState: AppState, repoIds: [String]) -> String {
@@ -141,7 +145,7 @@ struct AgentPromptHandler: WorkflowBlockHandler {
     func run(_ block: WorkflowBlock, context: BlockRunContext) async throws -> String {
         let repoIds = block.config.useRepos ? context.workflow.repoIds : []
         let repoBlock = AgentBlockKit.repoDescription(context.appState, repoIds: repoIds)
-        let userMessage = AgentBlockKit.fill(block.config.promptTemplate, input: context.input, repoBlock: repoBlock)
+        let userMessage = AgentBlockKit.fill(block.config.promptTemplate, input: context.input, repoBlock: repoBlock, inputs: context.inputs)
         return try await AgentBlockKit.runAgent(context,
                                                 systemPrompt: block.config.systemPrompt,
                                                 userMessage: userMessage,
@@ -404,10 +408,19 @@ struct RepoReportHandler: WorkflowBlockHandler {
 struct CodeBlockHandler: WorkflowBlockHandler {
     func run(_ block: WorkflowBlock, context: BlockRunContext) async throws -> String {
         let cwd = context.appState.repoPaths(for: context.workflow.repoIds).first
+        // Multiple named inputs → hand the script a JSON object on stdin; a single input → raw text.
+        let stdin: String
+        if context.inputs.count > 1,
+           let data = try? JSONSerialization.data(withJSONObject: context.inputs, options: [.sortedKeys, .prettyPrinted]),
+           let json = String(data: data, encoding: .utf8) {
+            stdin = json
+        } else {
+            stdin = context.input
+        }
         let result = try await CodeRunner.shared.run(
             interpreter: block.config.interpreter,
             code: block.config.code,
-            stdin: context.input,
+            stdin: stdin,
             workingDirectory: cwd,
             timeout: 300
         )
