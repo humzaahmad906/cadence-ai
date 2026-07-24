@@ -1,20 +1,15 @@
 import SwiftUI
 
-/// New shape: persistent chat rail (left) + adaptive canvas (right).
-/// No route enum — canvas artifact drives what appears on the right.
+/// Full-width adaptive canvas. The canvas artifact drives what appears; no route enum.
+/// (The left chat rail was removed; AgentChatView.swift is kept but unused.)
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
         ZStack(alignment: .top) {
-            HStack(spacing: 0) {
-                AgentChatView()
-                    .frame(width: 420)
-                    .overlay(Rectangle().fill(DS.border).frame(width: 1), alignment: .trailing)
-                CanvasHost()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .background(DS.contentBG)
+            CanvasHost()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(DS.contentBG)
 
             if let err = appState.bootstrapError {
                 HStack(spacing: 8) {
