@@ -1051,6 +1051,19 @@ final class AppState: ObservableObject {
         await runner.resumeReview(approve: approve, editedOutput: editedOutput)
     }
 
+    // MARK: run history
+
+    /// Past runs of a workflow, newest first (persisted under workflows/<id>/runs/).
+    func runHistory(_ workflowId: String) -> [WorkflowRun] {
+        workflowStore.runs(workflowId: workflowId)
+    }
+
+    /// Open a saved run read-only in the run view (renders each block's stored output).
+    func openRun(_ run: WorkflowRun) {
+        activeRun = run
+        setArtifact(.workflowRun(id: run.id))
+    }
+
     // MARK: code blocks (Generate / Validate / standalone Run)
 
     /// Agent writes the block's Python from its intent + I/O contract. Returns the code ("" on error).

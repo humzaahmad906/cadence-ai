@@ -98,6 +98,7 @@ private struct WorkflowCard: View {
                         Button { appState.setArtifact(.workflowBuilder(id: workflow.id)) } label: {
                             Label("Edit", systemImage: "slider.horizontal.3")
                         }.buttonStyle(SecondaryButtonStyle())
+                        historyMenu
                         Menu {
                             Button(role: .destructive) { appState.deleteWorkflow(workflow.id) } label: {
                                 Label("Delete", systemImage: "trash")
@@ -129,6 +130,41 @@ private struct WorkflowCard: View {
                 }
                 .font(DS.Font.micro).foregroundStyle(DS.textTertiary)
             }
+        }
+    }
+
+    private var historyMenu: some View {
+        let runs = appState.runHistory(workflow.id)
+        return Menu {
+            if runs.isEmpty {
+                Text("No runs yet")
+            } else {
+                ForEach(runs.prefix(20)) { run in
+                    Button { appState.openRun(run) } label: {
+                        Label(runLabel(run), systemImage: statusSymbol(run.status))
+                    }
+                }
+            }
+        } label: {
+            Label("History", systemImage: "clock.arrow.circlepath")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(runs.isEmpty)
+    }
+
+    private func runLabel(_ run: WorkflowRun) -> String {
+        let done = run.blocks.filter { $0.status == .done }.count
+        return "\(run.createdAt.formatted(date: .abbreviated, time: .shortened)) · \(run.status.rawValue) · \(done)/\(run.blocks.count)"
+    }
+
+    private func statusSymbol(_ s: RunStatus) -> String {
+        switch s {
+        case .done:           return "checkmark.circle"
+        case .failed:         return "xmark.octagon"
+        case .awaitingReview: return "hand.raised"
+        case .running:        return "play.circle"
+        case .pending:        return "circle"
         }
     }
 }

@@ -182,9 +182,11 @@ struct OutputContent: View {
                 .scaledToFit()
                 .frame(maxHeight: 360)
                 .clipShape(RoundedRectangle(cornerRadius: DS.radius))
+        } else if prose {
+            MarkdownText(markdown: text)
         } else {
             Text(text)
-                .font(prose ? DS.Font.body : DS.Font.mono)
+                .font(DS.Font.mono)
                 .textSelection(.enabled)
         }
     }
