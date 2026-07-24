@@ -107,37 +107,26 @@ enum ViewerTarget: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-/// SIPOC-style lane a block sits in on the workflow canvas.
-enum WorkflowLane: String, Codable, CaseIterable, Identifiable {
-    case suppliers, inputs, process, outputs, customers
-    var id: String { rawValue }
-    var label: String {
-        switch self {
-        case .suppliers: return "Suppliers"
-        case .inputs:    return "Inputs"
-        case .process:   return "Process"
-        case .outputs:   return "Outputs"
-        case .customers: return "Customers"
-        }
-    }
-    /// Default lane for a block kind (mapping A: auto-by-kind).
-    static func `default`(for kind: WorkflowBlockKind) -> WorkflowLane {
-        switch kind {
-        case .input:                  return .inputs
-        case .createTickets, .viewer: return .outputs
-        default:                      return .process
-        }
-    }
-}
-
-/// A directed connection between two blocks (source output → target input). Enables fan-out /
-/// fan-in — multiple inputs and outputs — beyond the old linear chain.
+/// A directed connection between two blocks, port to port. Enables fan-out / fan-in —
+/// multiple named inputs and outputs — beyond the old linear chain. Empty port = the block's
+/// single default port.
 struct WorkflowEdge: Codable, Hashable, Identifiable {
     var id: UUID
     var from: UUID
     var to: UUID
-    init(id: UUID = UUID(), from: UUID, to: UUID) {
-        self.id = id; self.from = from; self.to = to
+    var fromPort: String
+    var toPort: String
+    init(id: UUID = UUID(), from: UUID, to: UUID, fromPort: String = "", toPort: String = "") {
+        self.id = id; self.from = from; self.to = to; self.fromPort = fromPort; self.toPort = toPort
+    }
+    private enum CodingKeys: String, CodingKey { case id, from, to, fromPort, toPort }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
+        from = try c.decode(UUID.self, forKey: .from)
+        to = try c.decode(UUID.self, forKey: .to)
+        fromPort = (try? c.decode(String.self, forKey: .fromPort)) ?? ""
+        toPort = (try? c.decode(String.self, forKey: .toPort)) ?? ""
     }
 }
 
@@ -201,10 +190,13 @@ struct WorkflowBlockConfig: Codable, Hashable {
     /// agent blocks: effort level passed to the claude CLI (--effort). Empty = CLI default.
     var effort: String = ""
 
-    /// canvas: node position; lane raw value (empty = auto by kind via WorkflowLane.default).
+    /// canvas: node position.
     var x: Double = 0
     var y: Double = 0
-    var lane: String = ""
+    /// ports: named input ports (empty → implicit ["input"]); output ports (empty → ["output"];
+    /// for multiple outputs the block emits a JSON object whose keys are these names).
+    var inputPorts: [String] = []
+    var outputPorts: [String] = []
 
     init() {}
 
@@ -216,7 +208,7 @@ struct WorkflowBlockConfig: Codable, Hashable {
         case docPath, question, sinceRef
         case code, interpreter, inputDesc, outputDesc, codeIntent, sampleInput, validated
         case inputText, useRepos, model, effort
-        case x, y, lane
+        case x, y, inputPorts, outputPorts
     }
 
     init(from decoder: Decoder) throws {
@@ -249,7 +241,8 @@ struct WorkflowBlockConfig: Codable, Hashable {
         effort = str(.effort)
         x = (try? c.decode(Double.self, forKey: .x)) ?? 0
         y = (try? c.decode(Double.self, forKey: .y)) ?? 0
-        lane = str(.lane)
+        inputPorts = (try? c.decode([String].self, forKey: .inputPorts)) ?? []
+        outputPorts = (try? c.decode([String].self, forKey: .outputPorts)) ?? []
     }
 }
 
@@ -266,6 +259,12 @@ struct WorkflowBlock: Codable, Identifiable, Hashable {
         self.title = title
         self.config = config
     }
+}
+
+extension WorkflowBlock {
+    /// Effective ports — a block with none declared has a single default input/output port.
+    var inputPorts: [String] { config.inputPorts.isEmpty ? ["input"] : config.inputPorts }
+    var outputPorts: [String] { config.outputPorts.isEmpty ? ["output"] : config.outputPorts }
 }
 
 // MARK: - Workflow
