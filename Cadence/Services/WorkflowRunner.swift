@@ -17,12 +17,12 @@ final class WorkflowRunner {
     // MARK: entry points
 
     /// Build a fresh run for `workflow`, navigate to it, and execute from the first block.
-    func start(workflow: Workflow) async {
+    func start(workflow: Workflow, navigate: Bool = true) async {
         self.workflow = workflow
         let run = WorkflowRun(workflow: workflow)
         appState.activeRun = run
         appState.workflowStore.saveRun(run)
-        appState.setArtifact(.workflowRun(id: run.id))
+        if navigate { appState.setArtifact(.workflowRun(id: run.id)) }
         await runFrom(0)
     }
 

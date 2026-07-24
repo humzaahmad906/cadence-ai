@@ -1039,12 +1039,12 @@ final class AppState: ObservableObject {
     }
 
     /// Kick off a workflow run. Navigates to the live run view.
-    func runWorkflow(_ id: String) async {
+    func runWorkflow(_ id: String, navigate: Bool = true) async {
         guard let wf = workflows.first(where: { $0.id == id }) ?? workflowStore.load(id) else {
             addAmbient(AmbientEvent(kind: .error, text: "Workflow not found.", at: Date(), target: nil))
             return
         }
-        await runner.start(workflow: wf)
+        await runner.start(workflow: wf, navigate: navigate)
     }
 
     func resumeReview(approve: Bool, editedOutput: String?) async {

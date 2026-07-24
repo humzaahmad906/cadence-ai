@@ -7,30 +7,33 @@ struct WorkflowBuilderView: View {
 
     @State private var draft: Workflow?
     @State private var loaded = false
-    @State private var debugMode = false
     @State private var selectedBlockId: UUID?
+    @State private var mode: Mode = .build
+    @State private var aiOpen = false
+    @State private var reviewText = ""
+
+    enum Mode { case build, debug }
 
     var body: some View {
         Group {
-            if let _ = draft {
-                editor
-            } else {
-                notFound
+            if draft != nil { editor } else { notFound }
+        }
+        .onAppear(perform: load)
+        .overlay {
+            if aiOpen { AIBuilderView(onClose: { aiOpen = false }) }
+        }
+    }
+
+    private func load() {
+        guard !loaded else { return }
+        var d = appState.workflows.first(where: { $0.id == workflowId }) ?? appState.workflowStore.load(workflowId)
+        if d != nil, d!.edges.isEmpty, d!.blocks.count > 1 {   // migrate un-wired → linear chain
+            for i in 0..<(d!.blocks.count - 1) {
+                d!.edges.append(WorkflowEdge(from: d!.blocks[i].id, to: d!.blocks[i + 1].id))
             }
         }
-        .onAppear {
-            if !loaded {
-                var d = appState.workflows.first(where: { $0.id == workflowId }) ?? appState.workflowStore.load(workflowId)
-                // Migration: give an un-wired multi-block workflow a default linear chain of edges.
-                if d != nil, d!.edges.isEmpty, d!.blocks.count > 1 {
-                    for i in 0..<(d!.blocks.count - 1) {
-                        d!.edges.append(WorkflowEdge(from: d!.blocks[i].id, to: d!.blocks[i + 1].id))
-                    }
-                }
-                draft = d
-                loaded = true
-            }
-        }
+        draft = d
+        loaded = true
     }
 
     private var notFound: some View {
@@ -46,15 +49,16 @@ struct WorkflowBuilderView: View {
 
     private var editor: some View {
         VStack(spacing: 0) {
-            header
-                .padding(DS.space4)
-                .background(DS.cardBG)
-                .overlay(Rectangle().fill(DS.border).frame(height: 1), alignment: .bottom)
+            topBar
             HStack(spacing: 0) {
+                leftRail
+                    .frame(width: 250)
+                    .background(DS.sidebarBG)
+                    .overlay(Rectangle().fill(DS.border).frame(width: 1), alignment: .trailing)
                 WorkflowCanvasView(workflow: draftBinding, selectedBlockId: $selectedBlockId)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                inspector
-                    .frame(width: 380)
+                rightPanel
+                    .frame(width: 340)
                     .frame(maxHeight: .infinity)
                     .background(DS.cardBG)
                     .overlay(Rectangle().fill(DS.border).frame(width: 1), alignment: .leading)
@@ -73,57 +77,138 @@ struct WorkflowBuilderView: View {
         return draft?.blocks.firstIndex(where: { $0.id == id })
     }
 
-    /// Right panel: the selected node's config, or the workflow's own settings when nothing is selected.
-    @ViewBuilder
-    private var inspector: some View {
+    // MARK: top bar
+
+    private var topBar: some View {
+        HStack(spacing: DS.space3) {
+            Button { save(); appState.setArtifact(.workflows) } label: {
+                Label("Workflows", systemImage: "arrow.left")
+            }.buttonStyle(SecondaryButtonStyle())
+            if let name = draft?.name, !name.isEmpty { Chip(name, tint: DS.accent, filled: false) }
+            Spacer()
+            Picker("", selection: $mode) {
+                Text("Build").tag(Mode.build)
+                Text("Debug").tag(Mode.debug)
+            }
+            .pickerStyle(.segmented).fixedSize().labelsHidden()
+            Spacer()
+            if mode == .build {
+                Button { aiOpen = true } label: { Label("AI builder", systemImage: "sparkles") }
+                    .buttonStyle(SecondaryButtonStyle())
+            } else {
+                Button { appState.activeRun = nil } label: { Label("Reset", systemImage: "arrow.counterclockwise") }
+                    .buttonStyle(SecondaryButtonStyle())
+            }
+            Button {
+                save()
+                Task { await appState.runWorkflow(workflowId, navigate: false); mode = .debug }
+            } label: { Label("Run", systemImage: "play.fill") }
+            .buttonStyle(PrimaryButtonStyle())
+            .disabled((draft?.blocks.isEmpty ?? true) || appState.agentRunning)
+        }
+        .padding(DS.space3)
+        .background(DS.cardBG)
+        .overlay(Rectangle().fill(DS.border).frame(height: 1), alignment: .bottom)
+    }
+
+    // MARK: left rail (workflows + block palette)
+
+    private var leftRail: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: DS.space4) {
-                if let idx = selectedIndex {
-                    HStack {
-                        Text("Block").font(DS.Font.title)
-                        Spacer()
-                        Button { selectedBlockId = nil } label: { Image(systemName: "xmark") }
-                            .buttonStyle(.borderless).foregroundStyle(DS.textTertiary)
+                VStack(alignment: .leading, spacing: DS.space2) {
+                    Text("WORKFLOWS").font(DS.Font.micro.weight(.bold)).tracking(0.6).foregroundStyle(DS.textTertiary)
+                    ForEach(appState.workflows) { wf in
+                        Button { save(); appState.setArtifact(.workflowBuilder(id: wf.id)) } label: {
+                            HStack(spacing: 8) {
+                                StatusDot(tint: wf.id == workflowId ? DS.accent : DS.textTertiary)
+                                Text(wf.name).font(DS.Font.body)
+                                    .foregroundStyle(wf.id == workflowId ? DS.accent : DS.textPrimary).lineLimit(1)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 8).padding(.vertical, 5)
+                            .background(RoundedRectangle(cornerRadius: DS.radius).fill(wf.id == workflowId ? DS.accentSoft : Color.clear))
+                            .contentShape(Rectangle())
+                        }.buttonStyle(.plain)
                     }
-                    BlockEditor(
-                        block: blockBinding(idx),
-                        index: idx,
-                        count: draft?.blocks.count ?? 0,
-                        workflow: draft ?? Workflow(name: ""),
-                        debugMode: debugMode,
-                        onMoveUp: { move(idx, by: -1) },
-                        onMoveDown: { move(idx, by: 1) },
-                        onDelete: { removeBlock(idx); selectedBlockId = nil }
-                    )
-                } else {
-                    Text("Workflow").font(DS.Font.title)
-                    metaCard
-                    repoPicker
-                    Text("Tap a node to edit it. Add blocks from the toolbar; drag nodes between lanes.")
-                        .font(DS.Font.caption).foregroundStyle(DS.textTertiary)
                 }
+                Divider().overlay(DS.borderSoft)
+                BlockPaletteView(onAdd: { addBlock($0) })
             }
-            .padding(DS.space4)
+            .padding(DS.space3)
         }
     }
 
-    private var header: some View {
-        HStack {
-            Button { appState.setArtifact(.workflows) } label: {
-                Label("Workflows", systemImage: "arrow.left")
-            }.buttonStyle(SecondaryButtonStyle())
-            Spacer()
-            addBlockRow
-            Toggle(isOn: $debugMode) { Label("Debug", systemImage: "ladybug") }
-                .toggleStyle(.button)
-                .help("Show a per-block runner so you can test each block in isolation")
-            Button { save() } label: { Label("Save", systemImage: "checkmark") }
-                .buttonStyle(SecondaryButtonStyle())
-            Button { save(); Task { await appState.runWorkflow(workflowId) } } label: {
-                Label("Save & run", systemImage: "play.fill")
+    // MARK: right panel (inspector in Build, debugger in Debug)
+
+    @ViewBuilder
+    private var rightPanel: some View {
+        if mode == .debug {
+            ScrollView {
+                VStack(alignment: .leading, spacing: DS.space3) {
+                    DebugPanelView()
+                    reviewControls
+                }
+                .padding(DS.space3)
             }
-            .buttonStyle(PrimaryButtonStyle())
-            .disabled((draft?.blocks.isEmpty ?? true) || appState.agentRunning)
+        } else {
+            ScrollView { buildInspector.padding(DS.space4) }
+        }
+    }
+
+    @ViewBuilder
+    private var buildInspector: some View {
+        VStack(alignment: .leading, spacing: DS.space4) {
+            if let idx = selectedIndex {
+                HStack {
+                    Text("Block").font(DS.Font.title)
+                    Spacer()
+                    Button { selectedBlockId = nil } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.borderless).foregroundStyle(DS.textTertiary)
+                }
+                BlockEditor(
+                    block: blockBinding(idx),
+                    index: idx,
+                    count: draft?.blocks.count ?? 0,
+                    workflow: draft ?? Workflow(name: ""),
+                    debugMode: true,
+                    onMoveUp: { move(idx, by: -1) },
+                    onMoveDown: { move(idx, by: 1) },
+                    onDelete: { removeBlock(idx); selectedBlockId = nil }
+                )
+            } else {
+                Text("Build your workflow").font(DS.Font.title)
+                Text("Add blocks from the palette, then drag a node's output port to another node's input to connect them. Click a node to configure it. Switch to Debug to run it.")
+                    .font(DS.Font.body).foregroundStyle(DS.textSecondary).fixedSize(horizontal: false, vertical: true)
+                metaCard
+                repoPicker
+            }
+        }
+    }
+
+    /// Approve / reject controls shown in Debug mode when the run pauses on a review block.
+    @ViewBuilder
+    private var reviewControls: some View {
+        if let run = appState.activeRun, run.status == .awaitingReview, run.currentIndex < run.blocks.count {
+            VStack(alignment: .leading, spacing: DS.space2) {
+                Text("Review — edit if needed, then approve to continue.")
+                    .font(DS.Font.caption).foregroundStyle(DS.textSecondary)
+                TextEditor(text: $reviewText)
+                    .font(DS.Font.mono).scrollContentBackground(.hidden)
+                    .frame(minHeight: 120).padding(8)
+                    .background(RoundedRectangle(cornerRadius: DS.radius).fill(DS.insetBG))
+                    .overlay(RoundedRectangle(cornerRadius: DS.radius).stroke(DS.border, lineWidth: 1))
+                HStack {
+                    Button(role: .destructive) { Task { await appState.resumeReview(approve: false, editedOutput: nil) } } label: {
+                        Label("Reject", systemImage: "xmark")
+                    }.buttonStyle(SecondaryButtonStyle())
+                    Spacer()
+                    Button { Task { await appState.resumeReview(approve: true, editedOutput: reviewText) } } label: {
+                        Label("Approve & continue", systemImage: "checkmark")
+                    }.buttonStyle(PrimaryButtonStyle())
+                }
+            }
+            .onAppear { reviewText = run.blocks[run.currentIndex].output }
         }
     }
 
@@ -179,24 +264,6 @@ struct WorkflowBuilderView: View {
                 .stroke(selected ? DS.accent.opacity(0.4) : DS.border, lineWidth: 1))
         }
         .buttonStyle(.plain)
-    }
-
-    private var addBlockRow: some View {
-        Menu {
-            ForEach(WorkflowBlockKind.allCases) { kind in
-                Button {
-                    addBlock(kind)
-                } label: {
-                    Label(kind.label, systemImage: kind.icon)
-                }
-            }
-        } label: {
-            Label("Add block", systemImage: "plus")
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .padding(.horizontal, 12).padding(.vertical, 7)
-        .background(RoundedRectangle(cornerRadius: DS.radius, style: .continuous).stroke(DS.border, lineWidth: 1))
     }
 
     // MARK: mutation
