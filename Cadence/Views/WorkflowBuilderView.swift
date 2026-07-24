@@ -20,7 +20,14 @@ struct WorkflowBuilderView: View {
         }
         .onAppear {
             if !loaded {
-                draft = appState.workflows.first(where: { $0.id == workflowId }) ?? appState.workflowStore.load(workflowId)
+                var d = appState.workflows.first(where: { $0.id == workflowId }) ?? appState.workflowStore.load(workflowId)
+                // Migration: give an un-wired multi-block workflow a default linear chain of edges.
+                if d != nil, d!.edges.isEmpty, d!.blocks.count > 1 {
+                    for i in 0..<(d!.blocks.count - 1) {
+                        d!.edges.append(WorkflowEdge(from: d!.blocks[i].id, to: d!.blocks[i + 1].id))
+                    }
+                }
+                draft = d
                 loaded = true
             }
         }
@@ -276,8 +283,50 @@ private struct BlockEditor: View {
                 Text(block.kind.blurb).font(DS.Font.caption).foregroundStyle(DS.textTertiary)
                 Divider().overlay(DS.borderSoft)
                 config
+                portsEditor
                 if debugMode { debugSection }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var portsEditor: some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: DS.space2) {
+                portList(title: "Inputs", ports: $block.config.inputPorts, defaultName: "input")
+                portList(title: "Outputs", ports: $block.config.outputPorts, defaultName: "output")
+                Text("Wire edges on the canvas between ports. Agent prompts read each input as {{name}}; multiple outputs = the block emits JSON keyed by these names.")
+                    .font(DS.Font.micro).foregroundStyle(DS.textTertiary)
+            }
+            .padding(.top, 4)
+        } label: {
+            Label("Ports", systemImage: "point.3.connected.trianglepath.dotted").font(DS.Font.caption)
+        }
+    }
+
+    private func portList(title: String, ports: Binding<[String]>, defaultName: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(DS.Font.caption).foregroundStyle(DS.textSecondary)
+            if ports.wrappedValue.isEmpty {
+                Text("1 default port (\(defaultName))").font(DS.Font.micro).foregroundStyle(DS.textTertiary)
+            }
+            ForEach(ports.wrappedValue.indices, id: \.self) { i in
+                HStack(spacing: 6) {
+                    TextField("port name", text: Binding(
+                        get: { i < ports.wrappedValue.count ? ports.wrappedValue[i] : "" },
+                        set: { if i < ports.wrappedValue.count { ports.wrappedValue[i] = $0 } }
+                    ))
+                    .textFieldStyle(.plain).font(DS.Font.body)
+                    .padding(.horizontal, 8).padding(.vertical, 5)
+                    .background(RoundedRectangle(cornerRadius: DS.radius).fill(DS.insetBG))
+                    Button { if i < ports.wrappedValue.count { ports.wrappedValue.remove(at: i) } } label: {
+                        Image(systemName: "minus.circle")
+                    }.buttonStyle(.borderless).foregroundStyle(DS.textTertiary)
+                }
+            }
+            Button { ports.wrappedValue.append("\(defaultName)\(ports.wrappedValue.count + 1)") } label: {
+                Label("Add port", systemImage: "plus")
+            }.buttonStyle(.borderless).font(DS.Font.caption)
         }
     }
 
