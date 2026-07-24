@@ -11,6 +11,9 @@ struct WorkflowBuilderView: View {
     @State private var mode: Mode = .build
     @State private var aiOpen = false
     @State private var reviewText = ""
+    @State private var showInputPrompt = false
+    @State private var pendingInputIds: [UUID] = []
+    @State private var inputDrafts: [UUID: String] = [:]
 
     enum Mode { case build, debug }
 
@@ -66,6 +69,62 @@ struct WorkflowBuilderView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(DS.contentBG)
+        .sheet(isPresented: $showInputPrompt) { inputPromptSheet }
+    }
+
+    // MARK: run gating (prompt for empty input blocks before running)
+
+    private func attemptRun() {
+        save()
+        let empties = (draft?.blocks ?? []).filter {
+            $0.kind == .input && $0.config.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        if empties.isEmpty {
+            Task { await appState.runWorkflow(workflowId, navigate: false); mode = .debug }
+        } else {
+            pendingInputIds = empties.map { $0.id }
+            inputDrafts = Dictionary(uniqueKeysWithValues: empties.map { ($0.id, "") })
+            showInputPrompt = true
+        }
+    }
+
+    private func submitInputsAndRun() {
+        for id in pendingInputIds {
+            if let idx = draft?.blocks.firstIndex(where: { $0.id == id }) {
+                draft?.blocks[idx].config.inputText = inputDrafts[id] ?? ""
+            }
+        }
+        save()
+        showInputPrompt = false
+        Task { await appState.runWorkflow(workflowId, navigate: false); mode = .debug }
+    }
+
+    private var inputPromptSheet: some View {
+        VStack(alignment: .leading, spacing: DS.space4) {
+            Text("Provide input").font(DS.Font.title)
+            Text("This workflow starts with input that needs text before it runs.")
+                .font(DS.Font.caption).foregroundStyle(DS.textSecondary)
+            ForEach(pendingInputIds, id: \.self) { id in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(draft?.blocks.first(where: { $0.id == id })?.title ?? "Input")
+                        .font(DS.Font.caption).foregroundStyle(DS.textSecondary)
+                    TextEditor(text: Binding(get: { inputDrafts[id] ?? "" }, set: { inputDrafts[id] = $0 }))
+                        .font(DS.Font.body).scrollContentBackground(.hidden)
+                        .frame(minHeight: 90).padding(8)
+                        .background(RoundedRectangle(cornerRadius: DS.radius).fill(DS.insetBG))
+                        .overlay(RoundedRectangle(cornerRadius: DS.radius).stroke(DS.border, lineWidth: 1))
+                }
+            }
+            HStack {
+                Button { showInputPrompt = false } label: { Text("Cancel") }.buttonStyle(SecondaryButtonStyle())
+                Spacer()
+                Button { submitInputsAndRun() } label: { Label("Run", systemImage: "play.fill") }
+                    .buttonStyle(PrimaryButtonStyle())
+                    .disabled(pendingInputIds.contains { (inputDrafts[$0] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+            }
+        }
+        .padding(DS.space6)
+        .frame(width: 460)
     }
 
     private var draftBinding: Binding<Workflow> {
@@ -99,10 +158,7 @@ struct WorkflowBuilderView: View {
                 Button { appState.activeRun = nil } label: { Label("Reset", systemImage: "arrow.counterclockwise") }
                     .buttonStyle(SecondaryButtonStyle())
             }
-            Button {
-                save()
-                Task { await appState.runWorkflow(workflowId, navigate: false); mode = .debug }
-            } label: { Label("Run", systemImage: "play.fill") }
+            Button { attemptRun() } label: { Label("Run", systemImage: "play.fill") }
             .buttonStyle(PrimaryButtonStyle())
             .disabled((draft?.blocks.isEmpty ?? true) || appState.agentRunning)
         }
