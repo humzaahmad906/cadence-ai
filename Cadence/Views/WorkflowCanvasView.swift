@@ -8,19 +8,14 @@ struct WorkflowCanvasView: View {
     @Binding var workflow: Workflow
     @Binding var selectedBlockId: UUID?
 
-    // Layout metrics
-    private let laneWidth: CGFloat = 260
-    private let headerH: CGFloat = 46
     private let nodeSize = CGSize(width: 176, height: 60)
-    private let rowStride: CGFloat = 104
-    private let topPad: CGFloat = 24
-
-    private var lanes: [WorkflowLane] { WorkflowLane.allCases }
+    private let rowStride: CGFloat = 108
+    private let originX: CGFloat = 120
+    private let originY: CGFloat = 60
 
     var body: some View {
         ScrollView([.horizontal, .vertical]) {
             ZStack(alignment: .topLeading) {
-                laneBackgrounds
                 edgeLayer
                 nodeLayer
             }
@@ -28,29 +23,6 @@ struct WorkflowCanvasView: View {
             .padding(24)
         }
         .background(DS.contentBG)
-    }
-
-    // MARK: lanes
-
-    private var laneBackgrounds: some View {
-        ForEach(Array(lanes.enumerated()), id: \.element) { idx, lane in
-            let x = CGFloat(idx) * laneWidth
-            ZStack(alignment: .top) {
-                Rectangle()
-                    .fill(laneColor(lane).opacity(0.04))
-                    .frame(width: laneWidth, height: canvasHeight)
-                Text(lane.label)
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: laneWidth, height: headerH)
-                    .background(laneColor(lane))
-                Rectangle()
-                    .stroke(style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                    .foregroundStyle(laneColor(lane).opacity(0.4))
-                    .frame(width: laneWidth, height: canvasHeight)
-            }
-            .position(x: x + laneWidth / 2, y: canvasHeight / 2)
-        }
     }
 
     // MARK: edges
@@ -81,39 +53,24 @@ struct WorkflowCanvasView: View {
                             workflow.blocks[idx].config.x = Double(g.location.x)
                             workflow.blocks[idx].config.y = Double(g.location.y)
                         }
-                        .onEnded { g in
-                            // Snap lane to whichever column the node was dropped in.
-                            let laneIdx = max(0, min(lanes.count - 1, Int(g.location.x / laneWidth)))
-                            workflow.blocks[idx].config.lane = lanes[laneIdx].rawValue
-                        }
                 )
         }
     }
 
     // MARK: layout
 
-    /// Center point for every block: stored (x,y) if set, else auto-placed in its lane column.
+    /// Center point per block: stored (x,y) if set, else auto-placed in a simple vertical chain.
     private func positions() -> [UUID: CGPoint] {
         var result: [UUID: CGPoint] = [:]
-        var slot: [WorkflowLane: Int] = [:]
-        for block in workflow.blocks {
-            let lane = laneOf(block)
+        for (i, block) in workflow.blocks.enumerated() {
             if block.config.x != 0 || block.config.y != 0 {
                 result[block.id] = CGPoint(x: block.config.x, y: block.config.y)
             } else {
-                let s = slot[lane, default: 0]
-                slot[lane] = s + 1
-                let laneIdx = lanes.firstIndex(of: lane) ?? 2
-                let x = CGFloat(laneIdx) * laneWidth + laneWidth / 2
-                let y = headerH + topPad + nodeSize.height / 2 + CGFloat(s) * rowStride
-                result[block.id] = CGPoint(x: x, y: y)
+                result[block.id] = CGPoint(x: originX + nodeSize.width / 2,
+                                           y: originY + nodeSize.height / 2 + CGFloat(i) * rowStride)
             }
         }
         return result
-    }
-
-    private func laneOf(_ block: WorkflowBlock) -> WorkflowLane {
-        WorkflowLane(rawValue: block.config.lane) ?? WorkflowLane.default(for: block.kind)
     }
 
     /// Explicit edges if any; otherwise a sensible linear chain so existing workflows show connected.
@@ -132,22 +89,13 @@ struct WorkflowCanvasView: View {
                width: nodeSize.width, height: nodeSize.height)
     }
 
-    private var canvasWidth: CGFloat { CGFloat(lanes.count) * laneWidth }
-    private var canvasHeight: CGFloat {
-        let maxSlots = Dictionary(grouping: workflow.blocks, by: laneOf).values.map(\.count).max() ?? 1
-        let autoH = headerH + topPad + CGFloat(max(1, maxSlots)) * rowStride + 80
-        let draggedH = (workflow.blocks.map { $0.config.y }.max() ?? 0) + 160
-        return max(700, autoH, draggedH)
+    private var canvasWidth: CGFloat {
+        let maxX = positions().values.map(\.x).max() ?? 0
+        return max(900, maxX + 320)
     }
-
-    private func laneColor(_ lane: WorkflowLane) -> Color {
-        switch lane {
-        case .suppliers: return .blue
-        case .inputs:    return .green
-        case .process:   return .orange
-        case .outputs:   return .purple
-        case .customers: return .red
-        }
+    private var canvasHeight: CGFloat {
+        let maxY = positions().values.map(\.y).max() ?? 0
+        return max(600, maxY + 220)
     }
 }
 
