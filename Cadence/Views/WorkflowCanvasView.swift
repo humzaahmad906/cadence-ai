@@ -17,8 +17,10 @@ import SwiftUI
 ///
 /// Styling uses the app design system (`DS`) exclusively.
 struct WorkflowCanvasView: View {
+    @EnvironmentObject var appState: AppState
     @Binding var workflow: Workflow
     @Binding var selectedBlockId: UUID?
+    @State private var outputViewerId: UUID?
 
     // Pan / zoom of the content layer. screen = pan + canvas * zoom.
     @State private var pan: CGSize = .zero
@@ -58,7 +60,33 @@ struct WorkflowCanvasView: View {
             .overlay(alignment: .bottomTrailing) { zoomCluster(size: geo.size).padding(16) }
             .onAppear { fitIfNeeded(geo.size) }
             .onChange(of: geo.size) { _, newValue in fitIfNeeded(newValue) }
+            .sheet(isPresented: Binding(get: { outputViewerId != nil },
+                                        set: { if !$0 { outputViewerId = nil } })) { outputSheet }
         }
+    }
+
+    /// The run state for a block in the active run, if any (drives node status + output viewer).
+    private func runState(_ id: UUID) -> BlockRunState? {
+        appState.activeRun?.blocks.first(where: { $0.id == id })
+    }
+
+    @ViewBuilder private var outputSheet: some View {
+        let block = workflow.blocks.first(where: { $0.id == outputViewerId })
+        let out = outputViewerId.flatMap { runState($0) }?.output ?? ""
+        VStack(alignment: .leading, spacing: DS.space3) {
+            HStack {
+                Text(block?.title.isEmpty == false ? block!.title : (block?.kind.label ?? "Output")).font(DS.Font.title)
+                Spacer()
+                Button { outputViewerId = nil } label: { Image(systemName: "xmark") }.buttonStyle(.borderless)
+            }
+            if out.isEmpty {
+                Text("No output yet — run the workflow first.").font(DS.Font.body).foregroundStyle(DS.textSecondary)
+            } else {
+                ScrollView { OutputContent(text: out, prose: true).frame(maxWidth: .infinity, alignment: .leading) }
+            }
+        }
+        .padding(DS.space6)
+        .frame(width: 560, height: 460)
     }
 
     // MARK: - Background (dotted grid + pan / deselect / cursor tracking)
@@ -147,10 +175,16 @@ struct WorkflowCanvasView: View {
     private func nodesLayer(_ positions: [UUID: CGPoint]) -> some View {
         ForEach(Array(workflow.blocks.enumerated()), id: \.element.id) { _, block in
             let tl = positions[block.id] ?? .zero
-            NodeCard(block: block, selected: selectedBlockId == block.id)
+            let rs = runState(block.id)
+            NodeCard(block: block, selected: selectedBlockId == block.id, status: rs?.status)
                 .position(x: tl.x + nodeWidth / 2, y: tl.y + nodeHeight / 2)
                 .zIndex(selectedBlockId == block.id ? 1 : 0)
                 .gesture(nodeGesture(block: block, origin: tl))
+                .contextMenu {
+                    Button { selectedBlockId = block.id } label: { Label("Configure", systemImage: "slider.horizontal.3") }
+                    Button { outputViewerId = block.id } label: { Label("View output", systemImage: "text.viewfinder") }
+                        .disabled((rs?.output ?? "").isEmpty)
+                }
         }
     }
 
@@ -389,8 +423,37 @@ struct WorkflowCanvasView: View {
 private struct NodeCard: View {
     let block: WorkflowBlock
     let selected: Bool
+    var status: BlockRunStatus? = nil
 
     private var accent: Color { block.kind.accent }
+
+    private var borderColor: Color {
+        switch status {
+        case .done:           return DS.ok
+        case .running:        return DS.accent
+        case .failed:         return DS.danger
+        case .awaitingReview: return DS.warn
+        default:              return selected ? accent : DS.border
+        }
+    }
+
+    @ViewBuilder private var statusBadge: some View {
+        switch status {
+        case .done:
+            Image(systemName: "checkmark.circle.fill").font(.system(size: 16))
+                .foregroundStyle(DS.ok).background(Circle().fill(.white)).padding(6)
+        case .running:
+            ProgressView().controlSize(.small).padding(8)
+        case .failed:
+            Image(systemName: "xmark.octagon.fill").font(.system(size: 16))
+                .foregroundStyle(DS.danger).background(Circle().fill(.white)).padding(6)
+        case .awaitingReview:
+            Image(systemName: "hand.raised.fill").font(.system(size: 14))
+                .foregroundStyle(DS.warn).padding(6)
+        default:
+            EmptyView()
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -427,8 +490,9 @@ private struct NodeCard: View {
         .clipShape(RoundedRectangle(cornerRadius: DS.radiusL, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: DS.radiusL, style: .continuous)
-                .strokeBorder(selected ? accent : DS.border, lineWidth: 1.5)
+                .strokeBorder(borderColor, lineWidth: (status != nil || selected) ? 2 : 1.5)
         )
+        .overlay(alignment: .topTrailing) { statusBadge }
         .cardShadow(selected ? 2 : 1)
     }
 }
