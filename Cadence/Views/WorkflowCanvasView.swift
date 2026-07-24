@@ -1,282 +1,504 @@
 import SwiftUI
 
-/// Free-form flowchart canvas for a workflow. Shaped nodes (parallelogram = data, rounded rect =
-/// process) with named input ports (left) and output ports (right). Drag from an output port to an
-/// input port to wire an edge (fan-out / fan-in). Drag a node body to move it. Tap a node to select
-/// it (the builder shows its config). Hover an edge to reveal its delete handle.
+/// The flagship node-graph canvas for a workflow (Build mode).
+///
+/// A dotted-grid canvas with a pan/zoom content layer. Each block renders as a card with a
+/// coloured top accent bar, an icon badge, a category tag pill, a title and a subtitle. Ports
+/// live on the card's left (inputs, hollow) and right (outputs, filled) edges; output → input
+/// connections are drawn as bezier curves.
+///
+/// Interactions:
+/// - Pan: drag empty canvas. Zoom: the bottom-right `－ 100% ＋ | ⤢` cluster.
+/// - Move node: drag a card body (translation ÷ zoom → canvas coords); a small threshold keeps a
+///   click a select rather than a move.
+/// - Connect (click-to-connect): click an output port to start a link (a dashed bezier follows the
+///   cursor), then click a target input port to wire it. Click empty canvas to cancel.
+/// - Delete edge: hover its midpoint handle and click the ×.
+///
+/// Styling uses the app design system (`DS`) exclusively.
 struct WorkflowCanvasView: View {
     @Binding var workflow: Workflow
     @Binding var selectedBlockId: UUID?
 
-    @State private var dragConn: DragConn?
+    // Pan / zoom of the content layer. screen = pan + canvas * zoom.
+    @State private var pan: CGSize = .zero
+    @State private var zoom: CGFloat = 1
+    @State private var panStart: CGSize?
+    @State private var didInitialFit = false
 
-    private let nodeSize = CGSize(width: 176, height: 60)
-    private let rowStride: CGFloat = 120
-    private let originX: CGFloat = 140
-    private let originY: CGFloat = 70
-    private let portR: CGFloat = 5.5
-    private let hitRadius: CGFloat = 28
-    private let space = "canvas"
+    // Node drag + click-to-connect state.
+    @State private var activeNodeDrag: NodeDrag?
+    @State private var linkFrom: PendingLink?
+    @State private var pendingCursor: CGPoint = .zero
 
-    private struct DragConn { let from: UUID; let port: String; var at: CGPoint }
+    // Layout metrics (from the design handoff).
+    private let nodeWidth: CGFloat = 224
+    private let nodeHeight: CGFloat = 96
+    private let zoomMin: CGFloat = 0.35
+    private let zoomMax: CGFloat = 1.5
+    private let screenSpace = "cadenceCanvasScreen"
+
+    private struct NodeDrag { let id: UUID; let origin: CGPoint }
+    private struct PendingLink: Equatable { let block: UUID; let port: String }
+
+    // MARK: - Body
 
     var body: some View {
-        ScrollView([.horizontal, .vertical]) {
+        GeometryReader { geo in
+            let positions = effectivePositions()
             ZStack(alignment: .topLeading) {
-                edgeLayer
-                dragLine
-                nodeLayer
-                portLayer
+                gridBackground
+                content(positions: positions)
             }
-            .frame(width: canvasWidth, height: canvasHeight, alignment: .topLeading)
-            .coordinateSpace(name: space)
-            .padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .coordinateSpace(.named(screenSpace))
+            .clipped()
+            .overlay(alignment: .bottomLeading) { hintPill.padding(16) }
+            .overlay(alignment: .bottomTrailing) { zoomCluster(size: geo.size).padding(16) }
+            .onAppear { fitIfNeeded(geo.size) }
+            .onChange(of: geo.size) { _, newValue in fitIfNeeded(newValue) }
         }
+    }
+
+    // MARK: - Background (dotted grid + pan / deselect / cursor tracking)
+
+    private var gridBackground: some View {
+        Canvas { context, size in
+            let spacing: CGFloat = 22
+            let r: CGFloat = 1.2
+            let shading = GraphicsContext.Shading.color(DS.textTertiary.opacity(0.35))
+            var y: CGFloat = 0
+            while y <= size.height {
+                var x: CGFloat = 0
+                while x <= size.width {
+                    context.fill(Path(ellipseIn: CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2)),
+                                 with: shading)
+                    x += spacing
+                }
+                y += spacing
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(DS.contentBG)
+        .contentShape(Rectangle())
+        .gesture(panGesture)
+        .onTapGesture {
+            if linkFrom != nil { linkFrom = nil } else { selectedBlockId = nil }
+        }
+        .onContinuousHover(coordinateSpace: .named(screenSpace)) { phase in
+            guard linkFrom != nil else { return }
+            if case .active(let location) = phase {
+                pendingCursor = CGPoint(x: (location.x - pan.width) / zoom,
+                                        y: (location.y - pan.height) / zoom)
+            }
+        }
     }
 
-    // MARK: edges
+    private var panGesture: some Gesture {
+        DragGesture(minimumDistance: 2, coordinateSpace: .named(screenSpace))
+            .onChanged { value in
+                let base = panStart ?? pan
+                if panStart == nil { panStart = base }
+                pan = CGSize(width: base.width + value.translation.width,
+                             height: base.height + value.translation.height)
+            }
+            .onEnded { _ in panStart = nil }
+    }
 
-    private var edgeLayer: some View {
+    // MARK: - Content layer (edges, nodes, ports) under pan/zoom
+
+    private func content(positions: [UUID: CGPoint]) -> some View {
+        ZStack(alignment: .topLeading) {
+            edgesLayer(positions)
+            pendingLayer(positions)
+            nodesLayer(positions)
+            handlesLayer(positions)
+            portsLayer(positions)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .scaleEffect(zoom, anchor: .topLeading)
+        .offset(x: pan.width, y: pan.height)
+    }
+
+    private func edgesLayer(_ positions: [UUID: CGPoint]) -> some View {
         ForEach(workflow.edges) { edge in
-            if let s = portPoint(edge.from, edge.fromPort, isInput: false),
-               let d = portPoint(edge.to, edge.toPort, isInput: true) {
-                PortConnector(from: s, to: d)
-                    .stroke(DS.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                EdgeHandle(at: CGPoint(x: (s.x + d.x) / 2, y: (s.y + d.y) / 2)) { deleteEdge(edge.id) }
+            if let s = portPoint(edge.from, edge.fromPort, isInput: false, positions: positions),
+               let d = portPoint(edge.to, edge.toPort, isInput: true, positions: positions) {
+                EdgeShape(from: s, to: d)
+                    .stroke(DS.accent.opacity(0.3),
+                            style: StrokeStyle(lineWidth: 2, lineCap: .round))
             }
         }
-    }
-
-    @ViewBuilder private var dragLine: some View {
-        if let dc = dragConn, let s = portPoint(dc.from, dc.port, isInput: false) {
-            Path { p in p.move(to: s); p.addLine(to: dc.at) }
-                .stroke(DS.accent.opacity(0.6), style: StrokeStyle(lineWidth: 2, dash: [5, 4]))
-        }
-    }
-
-    // MARK: nodes
-
-    private var nodeLayer: some View {
-        let pos = positions()
-        return ForEach(Array(workflow.blocks.enumerated()), id: \.element.id) { idx, block in
-            NodeView(block: block, selected: selectedBlockId == block.id)
-                .frame(width: nodeSize.width, height: nodeSize.height)
-                .position(pos[block.id] ?? .zero)
-                .onTapGesture { selectedBlockId = block.id }
-                .gesture(
-                    DragGesture(coordinateSpace: .named(space))
-                        .onChanged { g in
-                            selectedBlockId = block.id
-                            workflow.blocks[idx].config.x = Double(g.location.x)
-                            workflow.blocks[idx].config.y = Double(g.location.y)
-                        }
-                )
-        }
-    }
-
-    // MARK: ports
-
-    private var portLayer: some View {
-        let pos = positions()
-        return ForEach(workflow.blocks) { block in
-            let r = rect(center: pos[block.id] ?? .zero)
-            ForEach(Array(block.inputPorts.enumerated()), id: \.offset) { i, name in
-                portDot(at: portOnEdge(r, index: i, count: block.inputPorts.count, left: true),
-                        label: block.inputPorts.count > 1 ? name : nil, leftLabel: true,
-                        isOutput: false, block: block, port: name)
-            }
-            ForEach(Array(block.outputPorts.enumerated()), id: \.offset) { i, name in
-                portDot(at: portOnEdge(r, index: i, count: block.outputPorts.count, left: false),
-                        label: block.outputPorts.count > 1 ? name : nil, leftLabel: false,
-                        isOutput: true, block: block, port: name)
-            }
-        }
+        .allowsHitTesting(false)
     }
 
     @ViewBuilder
-    private func portDot(at pt: CGPoint, label: String?, leftLabel: Bool, isOutput: Bool,
-                         block: WorkflowBlock, port: String) -> some View {
-        let content = HStack(spacing: 3) {
-            if let label, leftLabel { Text(label).font(DS.Font.micro).foregroundStyle(DS.textTertiary) }
-            Circle().fill(DS.cardBG).overlay(Circle().stroke(DS.accent, lineWidth: 2))
-                .frame(width: portR * 2, height: portR * 2)
-            if let label, !leftLabel { Text(label).font(DS.Font.micro).foregroundStyle(DS.textTertiary) }
-        }
-        .position(pt)
-
-        if isOutput {
-            content.gesture(
-                DragGesture(coordinateSpace: .named(space))
-                    .onChanged { g in dragConn = DragConn(from: block.id, port: port, at: g.location) }
-                    .onEnded { g in finishConnection(at: g.location) }
-            )
-        } else {
-            content
+    private func pendingLayer(_ positions: [UUID: CGPoint]) -> some View {
+        if let lf = linkFrom,
+           let s = portPoint(lf.block, lf.port, isInput: false, positions: positions) {
+            EdgeShape(from: s, to: pendingCursor)
+                .stroke(DS.accent.opacity(0.7),
+                        style: StrokeStyle(lineWidth: 2.5, lineCap: .round, dash: [5, 5]))
+                .allowsHitTesting(false)
         }
     }
 
-    // MARK: connection logic
+    private func nodesLayer(_ positions: [UUID: CGPoint]) -> some View {
+        ForEach(Array(workflow.blocks.enumerated()), id: \.element.id) { _, block in
+            let tl = positions[block.id] ?? .zero
+            NodeCard(block: block, selected: selectedBlockId == block.id)
+                .position(x: tl.x + nodeWidth / 2, y: tl.y + nodeHeight / 2)
+                .zIndex(selectedBlockId == block.id ? 1 : 0)
+                .gesture(nodeGesture(block: block, origin: tl))
+        }
+    }
 
-    private func finishConnection(at point: CGPoint) {
-        defer { dragConn = nil }
-        guard let dc = dragConn else { return }
-        var best: (block: UUID, port: String, dist: CGFloat)?
-        let pos = positions()
-        for block in workflow.blocks where block.id != dc.from {
-            let r = rect(center: pos[block.id] ?? .zero)
-            for (i, name) in block.inputPorts.enumerated() {
-                let p = portOnEdge(r, index: i, count: block.inputPorts.count, left: true)
-                let dist = hypot(p.x - point.x, p.y - point.y)
-                if dist < hitRadius, best == nil || dist < best!.dist { best = (block.id, name, dist) }
+    private func handlesLayer(_ positions: [UUID: CGPoint]) -> some View {
+        ForEach(workflow.edges) { edge in
+            if let s = portPoint(edge.from, edge.fromPort, isInput: false, positions: positions),
+               let d = portPoint(edge.to, edge.toPort, isInput: true, positions: positions) {
+                EdgeHandle { deleteEdge(edge.id) }
+                    .position(x: (s.x + d.x) / 2, y: (s.y + d.y) / 2)
             }
         }
-        guard let target = best else { return }
-        let dup = workflow.edges.contains {
-            $0.from == dc.from && $0.to == target.block && $0.fromPort == dc.port && $0.toPort == target.port
-        }
-        if !dup {
-            workflow.edges.append(WorkflowEdge(from: dc.from, to: target.block,
-                                               fromPort: dc.port, toPort: target.port))
+    }
+
+    private func portsLayer(_ positions: [UUID: CGPoint]) -> some View {
+        ForEach(Array(workflow.blocks.enumerated()), id: \.element.id) { _, block in
+            let accent = block.kind.accent
+            ForEach(Array(block.inputPorts.enumerated()), id: \.offset) { _, name in
+                if let p = portPoint(block.id, name, isInput: true, positions: positions) {
+                    portView(isOutput: false, accent: accent,
+                             label: block.inputPorts.count > 1 ? name : nil, at: p) {
+                        completeLink(to: block.id, port: name)
+                    }
+                }
+            }
+            ForEach(Array(block.outputPorts.enumerated()), id: \.offset) { _, name in
+                if let p = portPoint(block.id, name, isInput: false, positions: positions) {
+                    portView(isOutput: true, accent: accent,
+                             label: block.outputPorts.count > 1 ? name : nil, at: p) {
+                        startLink(from: block.id, port: name)
+                    }
+                }
+            }
         }
     }
 
-    private func deleteEdge(_ id: UUID) { workflow.edges.removeAll { $0.id == id } }
+    private func portView(isOutput: Bool, accent: Color, label: String?,
+                          at p: CGPoint, action: @escaping () -> Void) -> some View {
+        ZStack {
+            PortDot(isOutput: isOutput, accent: accent)
+                .onTapGesture(perform: action)
+            if let label {
+                Text(label)
+                    .font(DS.Font.micro)
+                    .foregroundStyle(DS.textTertiary)
+                    .fixedSize()
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(DS.cardBG.opacity(0.92)))
+                    .offset(x: isOutput ? 30 : -30)
+                    .allowsHitTesting(false)
+            }
+        }
+        .position(x: p.x, y: p.y)
+    }
 
-    // MARK: geometry
+    // MARK: - Node move gesture
 
-    private func positions() -> [UUID: CGPoint] {
-        var result: [UUID: CGPoint] = [:]
-        for (i, block) in workflow.blocks.enumerated() {
+    private func nodeGesture(block: WorkflowBlock, origin: CGPoint) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(screenSpace))
+            .onChanged { value in
+                if activeNodeDrag?.id != block.id {
+                    activeNodeDrag = NodeDrag(id: block.id, origin: origin)
+                    selectedBlockId = block.id
+                }
+                guard let drag = activeNodeDrag else { return }
+                // Small threshold: a click selects; only a real drag moves the node.
+                let moved = hypot(value.translation.width, value.translation.height) > 3
+                if moved, let i = workflow.blocks.firstIndex(where: { $0.id == block.id }) {
+                    workflow.blocks[i].config.x = Double(drag.origin.x + value.translation.width / zoom)
+                    workflow.blocks[i].config.y = Double(drag.origin.y + value.translation.height / zoom)
+                }
+            }
+            .onEnded { _ in activeNodeDrag = nil }
+    }
+
+    // MARK: - Connect / disconnect
+
+    private func startLink(from id: UUID, port: String) {
+        linkFrom = PendingLink(block: id, port: port)
+        if let p = portPoint(id, port, isInput: false, positions: effectivePositions()) {
+            pendingCursor = p
+        }
+    }
+
+    private func completeLink(to id: UUID, port: String) {
+        defer { linkFrom = nil }
+        guard let lf = linkFrom, lf.block != id else { return }
+        let duplicate = workflow.edges.contains {
+            $0.from == lf.block && $0.to == id && $0.fromPort == lf.port && $0.toPort == port
+        }
+        if !duplicate {
+            workflow.edges.append(WorkflowEdge(from: lf.block, to: id, fromPort: lf.port, toPort: port))
+        }
+    }
+
+    private func deleteEdge(_ id: UUID) {
+        workflow.edges.removeAll { $0.id == id }
+    }
+
+    // MARK: - Geometry
+
+    /// Effective top-left canvas position of every block. Blocks left at (0,0) are auto-laid-out
+    /// left-to-right by index so existing workflows render sensibly.
+    private func effectivePositions() -> [UUID: CGPoint] {
+        var out: [UUID: CGPoint] = [:]
+        for (index, block) in workflow.blocks.enumerated() {
             if block.config.x != 0 || block.config.y != 0 {
-                result[block.id] = CGPoint(x: block.config.x, y: block.config.y)
+                out[block.id] = CGPoint(x: block.config.x, y: block.config.y)
             } else {
-                result[block.id] = CGPoint(x: originX + nodeSize.width / 2,
-                                           y: originY + nodeSize.height / 2 + CGFloat(i) * rowStride)
+                out[block.id] = CGPoint(x: 60 + CGFloat(index) * 300, y: 150)
             }
         }
-        return result
+        return out
     }
 
-    private func rect(center: CGPoint) -> CGRect {
-        CGRect(x: center.x - nodeSize.width / 2, y: center.y - nodeSize.height / 2,
-               width: nodeSize.width, height: nodeSize.height)
-    }
-
-    private func portOnEdge(_ r: CGRect, index: Int, count: Int, left: Bool) -> CGPoint {
-        CGPoint(x: left ? r.minX : r.maxX,
-                y: r.minY + CGFloat(index + 1) * r.height / CGFloat(count + 1))
-    }
-
-    private func portPoint(_ blockId: UUID, _ port: String, isInput: Bool) -> CGPoint? {
+    /// Canvas-space point of a named port. Empty name resolves to the block's first port; ports are
+    /// spaced evenly down the edge (a single port sits at the vertical centre).
+    private func portPoint(_ blockId: UUID, _ port: String, isInput: Bool,
+                           positions: [UUID: CGPoint]) -> CGPoint? {
         guard let block = workflow.blocks.first(where: { $0.id == blockId }),
-              let center = positions()[blockId] else { return nil }
+              let tl = positions[blockId] else { return nil }
         let ports = isInput ? block.inputPorts : block.outputPorts
         let name = port.isEmpty ? (ports.first ?? "") : port
         let idx = max(0, ports.firstIndex(of: name) ?? 0)
-        return portOnEdge(rect(center: center), index: idx, count: ports.count, left: isInput)
+        let y = tl.y + nodeHeight * CGFloat(idx + 1) / CGFloat(ports.count + 1)
+        let x = isInput ? tl.x : tl.x + nodeWidth
+        return CGPoint(x: x, y: y)
     }
 
-    private var canvasWidth: CGFloat { max(900, (positions().values.map(\.x).max() ?? 0) + 340) }
-    private var canvasHeight: CGFloat { max(600, (positions().values.map(\.y).max() ?? 0) + 220) }
-}
+    // MARK: - Zoom / fit
 
-// MARK: - Edge delete handle (reveals on hover)
+    private func zoomBy(_ delta: CGFloat, size: CGSize) {
+        let newZoom = min(zoomMax, max(zoomMin, ((zoom + delta) * 100).rounded() / 100))
+        guard abs(newZoom - zoom) > 0.0001 else { return }
+        if size.width > 1, size.height > 1 {
+            // Keep the viewport centre fixed while zooming.
+            let cx = (size.width / 2 - pan.width) / zoom
+            let cy = (size.height / 2 - pan.height) / zoom
+            pan = CGSize(width: size.width / 2 - cx * newZoom,
+                         height: size.height / 2 - cy * newZoom)
+        }
+        zoom = newZoom
+    }
 
-private struct EdgeHandle: View {
-    let at: CGPoint
-    let onDelete: () -> Void
-    @State private var hovering = false
+    private func fitIfNeeded(_ size: CGSize) {
+        guard !didInitialFit, size.width > 1, size.height > 1, !workflow.blocks.isEmpty else { return }
+        fit(in: size, animated: false)
+        didInitialFit = true
+    }
 
-    var body: some View {
-        Button(action: onDelete) {
-            Image(systemName: "xmark.circle.fill")
-                .font(.system(size: 15))
-                .foregroundStyle(DS.danger)
-                .background(Circle().fill(.white).padding(1))
-                .opacity(hovering ? 1 : 0.001)
+    /// Centre + scale the node bounding box to fit the viewport (clamped 0.35…1).
+    private func fit(in size: CGSize, animated: Bool) {
+        let positions = effectivePositions()
+        guard size.width > 1, size.height > 1, !positions.isEmpty else { return }
+        let xs = positions.values.map(\.x)
+        let ys = positions.values.map(\.y)
+        let minX = xs.min() ?? 0
+        let minY = ys.min() ?? 0
+        let maxX = (xs.max() ?? 0) + nodeWidth
+        let maxY = (ys.max() ?? 0) + nodeHeight
+        let bw = max(1, maxX - minX)
+        let bh = max(1, maxY - minY)
+        let pad: CGFloat = 60
+        var z = min((size.width - pad * 2) / bw, (size.height - pad * 2) / bh, 1)
+        z = max(0.35, min(1, z))
+        let px = (size.width - bw * z) / 2 - minX * z
+        let py = (size.height - bh * z) / 2 - minY * z
+        let apply = { self.zoom = z; self.pan = CGSize(width: px, height: py) }
+        if animated { withAnimation(.easeInOut(duration: 0.25), apply) } else { apply() }
+    }
+
+    // MARK: - Floating controls
+
+    private var hintPill: some View {
+        HStack(spacing: 7) {
+            if linkFrom == nil {
+                Circle().fill(DS.accent).frame(width: 7, height: 7)
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(DS.textTertiary)
+                Circle().strokeBorder(DS.accent, lineWidth: 1.5).frame(width: 7, height: 7)
+                Text("to connect  ·  drag a node to move")
+            } else {
+                Circle().strokeBorder(DS.accent, lineWidth: 1.5).frame(width: 7, height: 7)
+                Text("Click an input port to connect  ·  click empty space to cancel")
+            }
+        }
+        .font(.system(size: 11, weight: .medium))
+        .foregroundStyle(DS.textSecondary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: DS.radius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DS.radius, style: .continuous).stroke(DS.border, lineWidth: 1))
+        .shadow(color: DS.shadowColor, radius: 8, y: 3)
+    }
+
+    private func zoomCluster(size: CGSize) -> some View {
+        HStack(spacing: 3) {
+            controlButton("minus", tint: DS.textSecondary) {
+                withAnimation(.easeInOut(duration: 0.18)) { zoomBy(-0.15, size: size) }
+            }
+            Text("\(Int((zoom * 100).rounded()))%")
+                .font(DS.Font.mono)
+                .foregroundStyle(DS.textSecondary)
+                .frame(width: 42)
+            controlButton("plus", tint: DS.textSecondary) {
+                withAnimation(.easeInOut(duration: 0.18)) { zoomBy(0.15, size: size) }
+            }
+            Rectangle().fill(DS.border).frame(width: 1, height: 16).padding(.horizontal, 2)
+            controlButton("arrow.up.left.and.arrow.down.right", tint: DS.accent) {
+                fit(in: size, animated: true)
+            }
+        }
+        .padding(4)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: DS.radius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DS.radius, style: .continuous).stroke(DS.border, lineWidth: 1))
+        .shadow(color: DS.shadowColor, radius: 8, y: 3)
+    }
+
+    private func controlButton(_ systemName: String, tint: Color,
+                               action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 26, height: 26)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .frame(width: 22, height: 22)
-        .contentShape(Circle())
-        .onHover { hovering = $0 }
-        .position(at)
     }
 }
 
-// MARK: - Node
+// MARK: - Node card
 
-private struct NodeView: View {
+private struct NodeCard: View {
     let block: WorkflowBlock
     let selected: Bool
 
+    private var accent: Color { block.kind.accent }
+
     var body: some View {
-        content
-            .background(shape.fill(DS.cardBG))
-            .overlay(shape.stroke(selected ? DS.accent : DS.accent.opacity(0.55), lineWidth: selected ? 2.5 : 1.5))
-            .shadow(color: .black.opacity(selected ? 0.18 : 0.08), radius: selected ? 6 : 3, y: 2)
-    }
-
-    private var content: some View {
-        VStack(spacing: 3) {
-            HStack(spacing: 5) {
-                Image(systemName: block.kind.icon).font(.caption).foregroundStyle(DS.accent)
-                Text(block.title.isEmpty ? block.kind.label : block.title)
-                    .font(DS.Font.caption).fontWeight(.medium)
-                    .lineLimit(2).multilineTextAlignment(.center)
-                    .foregroundStyle(DS.textPrimary)
+        VStack(spacing: 0) {
+            Rectangle().fill(accent).frame(height: 6)              // top accent bar
+            HStack(alignment: .center, spacing: 11) {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(accent.opacity(0.14))
+                    .frame(width: 46, height: 46)
+                    .overlay(
+                        Image(systemName: block.kind.icon)
+                            .font(.system(size: 19, weight: .semibold))
+                            .foregroundStyle(accent)
+                    )
+                VStack(alignment: .leading, spacing: 3) {
+                    Chip(block.kind.tag, tint: accent)
+                    Text(block.title.isEmpty ? block.kind.label : block.title)
+                        .font(DS.Font.headline)
+                        .foregroundStyle(DS.textPrimary)
+                        .lineLimit(1)
+                    Text(block.kind.subtitle)
+                        .font(DS.Font.caption)
+                        .foregroundStyle(DS.textSecondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
             }
-            Text(block.kind.label).font(DS.Font.micro).foregroundStyle(DS.textTertiary)
+            .padding(.horizontal, 13)
+            .padding(.top, 10)
+            .padding(.bottom, 12)
+            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 14)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var shape: some InsettableShape {
-        NodeShape(isData: block.kind == .input || block.kind == .viewer || block.kind == .createTickets)
+        .frame(width: 224, height: 96, alignment: .top)
+        .background(DS.cardBG)
+        .clipShape(RoundedRectangle(cornerRadius: DS.radiusL, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.radiusL, style: .continuous)
+                .strokeBorder(selected ? accent : DS.border, lineWidth: 1.5)
+        )
+        .cardShadow(selected ? 2 : 1)
     }
 }
 
-/// Rounded rectangle, or a parallelogram for data-shaped blocks.
-private struct NodeShape: InsettableShape {
-    let isData: Bool
-    var inset: CGFloat = 0
+// MARK: - Ports
 
-    func path(in rect: CGRect) -> Path {
-        let r = rect.insetBy(dx: inset, dy: inset)
-        guard isData else { return Path(roundedRect: r, cornerRadius: 12) }
-        let slant: CGFloat = 16
-        var p = Path()
-        p.move(to: CGPoint(x: r.minX + slant, y: r.minY))
-        p.addLine(to: CGPoint(x: r.maxX, y: r.minY))
-        p.addLine(to: CGPoint(x: r.maxX - slant, y: r.maxY))
-        p.addLine(to: CGPoint(x: r.minX, y: r.maxY))
-        p.closeSubpath()
-        return p
+private struct PortDot: View {
+    let isOutput: Bool
+    let accent: Color
+    @State private var hover = false
+
+    var body: some View {
+        dot
+            .scaleEffect(hover ? 1.25 : 1)
+            .frame(width: 22, height: 22)
+            .contentShape(Circle())
+            .onHover { hover = $0 }
+            .animation(.easeOut(duration: 0.1), value: hover)
     }
 
-    func inset(by amount: CGFloat) -> NodeShape { var c = self; c.inset += amount; return c }
+    @ViewBuilder private var dot: some View {
+        if isOutput {
+            ZStack {
+                Circle().fill(Color.white)
+                Circle().fill(accent).padding(3)
+            }
+            .frame(width: 14, height: 14)
+            .overlay(Circle().strokeBorder(accent.opacity(0.35), lineWidth: 1))
+        } else {
+            Circle()
+                .fill(DS.cardBG)
+                .overlay(Circle().strokeBorder(accent, lineWidth: 2))
+                .frame(width: 13, height: 13)
+        }
+    }
 }
 
-// MARK: - Connector
+// MARK: - Edge bezier + delete handle
 
-/// Orthogonal connector from an output port (right of a node) to an input port (left of another),
-/// with an arrowhead entering the target.
-private struct PortConnector: Shape {
-    let from: CGPoint
-    let to: CGPoint
+private struct EdgeShape: Shape {
+    var from: CGPoint
+    var to: CGPoint
 
     func path(in _: CGRect) -> Path {
-        let midX = (from.x + to.x) / 2
-        var p = Path()
-        p.move(to: from)
-        p.addLine(to: CGPoint(x: midX, y: from.y))
-        p.addLine(to: CGPoint(x: midX, y: to.y))
-        p.addLine(to: to)
-        let a: CGFloat = 6
-        p.move(to: CGPoint(x: to.x - a, y: to.y - a))
-        p.addLine(to: to)
-        p.addLine(to: CGPoint(x: to.x - a, y: to.y + a))
-        return p
+        var path = Path()
+        let dx = max(50, abs(to.x - from.x) * 0.5)
+        path.move(to: from)
+        path.addCurve(to: to,
+                      control1: CGPoint(x: from.x + dx, y: from.y),
+                      control2: CGPoint(x: to.x - dx, y: to.y))
+        return path
+    }
+}
+
+/// Small delete handle shown at an edge's midpoint; the × reveals on hover.
+private struct EdgeHandle: View {
+    let onDelete: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: onDelete) {
+            Image(systemName: "xmark")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 16, height: 16)
+                .background(Circle().fill(DS.danger))
+                .opacity(hover ? 1 : 0)
+        }
+        .buttonStyle(.plain)
+        .frame(width: 26, height: 26)
+        .contentShape(Circle())
+        .onHover { hover = $0 }
     }
 }
