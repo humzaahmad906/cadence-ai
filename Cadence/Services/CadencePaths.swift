@@ -21,6 +21,12 @@ enum CadencePaths {
     }
     /// Repo registry (replaces the Kuzu repo index).
     static var reposFile: URL { appSupport.appendingPathComponent("repos.json") }
+    /// One folder per workflow: workflows/<ID>/{workflow.json, runs/<runID>.json}.
+    static var workflowsDir: URL {
+        let dir = appSupport.appendingPathComponent("workflows")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
     static var digestArchiveDir: URL {
         let dir = appSupport.appendingPathComponent("digests")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

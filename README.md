@@ -7,6 +7,7 @@ Personal macOS dashboard for 2-week sprint tracking. Native SwiftUI + Kuzu graph
 - Paste sprint tasks in any format, Claude parses into tickets
 - Ticket template: description, results, blockers, verification, notes, time log, comments (with image/file attachments)
 - Priority rerank via drag OR natural-language chat ("PXLV-12 is top now")
+- Composable, block-based **workflows** (agent prompt → create tickets / review / summarize) — see [docs/WORKFLOWS.md](docs/WORKFLOWS.md)
 - Auto daily-standup draft from kanban movements — preview 1:45pm, clipboard 2:00pm
 - Notifs: 9am brief, 1:45pm draft-ready, idle >2d in In Progress, sprint <3d + open P0/P1
 - Graph DB with full history: status transitions, priority changes, comments, attachments

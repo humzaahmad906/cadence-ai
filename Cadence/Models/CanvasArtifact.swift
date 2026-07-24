@@ -12,6 +12,9 @@ enum CanvasArtifact: Hashable, Identifiable {
     case draftStack                         // ticket draft review stack (signature flow A)
     case digest                             // today's Slack draft
     case doctrines                          // findings list
+    case workflows                          // block-based workflow library
+    case workflowBuilder(id: String)        // compose/edit one workflow
+    case workflowRun(id: String)            // live run progress for one workflow
     case settings                           // paths + schedule
     case empty(reason: String)              // first-run / recovered from error
 
@@ -27,6 +30,9 @@ enum CanvasArtifact: Hashable, Identifiable {
         case .draftStack: return "draft_stack"
         case .digest: return "digest"
         case .doctrines: return "doctrines"
+        case .workflows: return "workflows"
+        case .workflowBuilder(let i): return "workflow_builder_\(i)"
+        case .workflowRun(let i): return "workflow_run_\(i)"
         case .settings: return "settings"
         case .empty(let r): return "empty_\(r)"
         }
@@ -44,6 +50,9 @@ enum CanvasArtifact: Hashable, Identifiable {
         case .draftStack: return "Review drafts"
         case .digest: return "Digest"
         case .doctrines: return "Doctrines"
+        case .workflows: return "Workflows"
+        case .workflowBuilder: return "Edit workflow"
+        case .workflowRun: return "Workflow run"
         case .settings: return "Settings"
         case .empty: return "Cadence"
         }
@@ -62,6 +71,9 @@ enum CanvasArtifact: Hashable, Identifiable {
         case .draftStack: return "square.stack"
         case .digest: return "text.badge.checkmark"
         case .doctrines: return "book.closed"
+        case .workflows: return "flowchart"
+        case .workflowBuilder: return "slider.horizontal.3"
+        case .workflowRun: return "play.circle"
         case .settings: return "gearshape"
         case .empty: return "sparkle"
         }

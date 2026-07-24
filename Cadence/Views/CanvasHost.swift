@@ -37,6 +37,9 @@ struct CanvasHost: View {
             Button { appState.setArtifact(.kickoff) } label: { Label("Start", systemImage: "sparkles") }
                 .buttonStyle(SecondaryButtonStyle())
                 .help("Draft new tickets from a prompt")
+            Button { appState.setArtifact(.workflows) } label: { Label("Workflows", systemImage: "flowchart") }
+                .buttonStyle(SecondaryButtonStyle())
+                .help("Composable block-based workflows")
             if !appState.tickets.isEmpty {
                 Button { appState.setArtifact(.sprintStatus) } label: { Label("Status", systemImage: "flag.checkered") }
                     .buttonStyle(SecondaryButtonStyle())
@@ -91,6 +94,12 @@ struct CanvasHost: View {
             DigestSectionView()
         case .doctrines:
             DoctrinesView()
+        case .workflows:
+            WorkflowsListView()
+        case .workflowBuilder(let id):
+            WorkflowBuilderView(workflowId: id)
+        case .workflowRun(let id):
+            WorkflowRunView(runId: id)
         case .settings:
             SettingsView()
         case .empty(let reason):
