@@ -1051,6 +1051,14 @@ final class AppState: ObservableObject {
         await runner.resumeReview(approve: approve, editedOutput: editedOutput)
     }
 
+    /// Retry: re-run a block (and everything downstream) within the active run.
+    func rerunBlock(_ blockId: UUID) async {
+        guard let run = activeRun,
+              let wf = workflows.first(where: { $0.id == run.workflowId }) ?? workflowStore.load(run.workflowId)
+        else { return }
+        await runner.rerun(workflow: wf, from: blockId)
+    }
+
     // MARK: run history
 
     /// Past runs of a workflow, newest first (persisted under workflows/<id>/runs/).

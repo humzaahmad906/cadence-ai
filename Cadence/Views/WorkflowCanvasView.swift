@@ -184,6 +184,11 @@ struct WorkflowCanvasView: View {
                     Button { selectedBlockId = block.id } label: { Label("Configure", systemImage: "slider.horizontal.3") }
                     Button { outputViewerId = block.id } label: { Label("View output", systemImage: "text.viewfinder") }
                         .disabled((rs?.output ?? "").isEmpty)
+                    if rs != nil {
+                        Button { Task { await appState.rerunBlock(block.id) } } label: {
+                            Label("Re-run from here", systemImage: "arrow.clockwise")
+                        }
+                    }
                 }
         }
     }

@@ -26,6 +26,29 @@ final class WorkflowRunner {
         await runFrom(0)
     }
 
+    /// Re-run a block and everything downstream of it: reset those blocks to pending, then resume
+    /// the (linear) run from that block. Used to retry a failed node.
+    func rerun(workflow: Workflow, from blockId: UUID) async {
+        self.workflow = workflow
+        guard var run = appState.activeRun,
+              let i = workflow.blocks.firstIndex(where: { $0.id == blockId }),
+              i < run.blocks.count else { return }
+        for j in run.blocks.indices where j >= i {
+            run.blocks[j].status = .pending
+            run.blocks[j].output = ""
+            run.blocks[j].input = ""
+            run.blocks[j].error = nil
+            run.blocks[j].startedAt = nil
+            run.blocks[j].finishedAt = nil
+        }
+        run.status = .running
+        run.currentIndex = i
+        run.updatedAt = Date()
+        appState.activeRun = run
+        appState.workflowStore.saveRun(run)
+        await runFrom(i)
+    }
+
     /// Resume a run paused on a block that awaits the user. On approve, the (optionally edited)
     /// output is carried forward; on reject the run is marked failed.
     func resumeReview(approve: Bool, editedOutput: String?) async {
