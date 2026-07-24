@@ -332,9 +332,34 @@ struct BlockRunState: Codable, Identifiable, Hashable {
     var title: String
     var status: BlockRunStatus
     var output: String
+    var input: String
     var error: String?
     var startedAt: Date?
     var finishedAt: Date?
+
+    init(id: UUID, kind: WorkflowBlockKind, title: String, status: BlockRunStatus,
+         output: String, input: String = "", error: String? = nil,
+         startedAt: Date? = nil, finishedAt: Date? = nil) {
+        self.id = id; self.kind = kind; self.title = title; self.status = status
+        self.output = output; self.input = input; self.error = error
+        self.startedAt = startedAt; self.finishedAt = finishedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, kind, title, status, output, input, error, startedAt, finishedAt
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        kind = try c.decode(WorkflowBlockKind.self, forKey: .kind)
+        title = (try? c.decode(String.self, forKey: .title)) ?? ""
+        status = (try? c.decode(BlockRunStatus.self, forKey: .status)) ?? .pending
+        output = (try? c.decode(String.self, forKey: .output)) ?? ""
+        input = (try? c.decode(String.self, forKey: .input)) ?? ""
+        error = try? c.decode(String.self, forKey: .error)
+        startedAt = try? c.decode(Date.self, forKey: .startedAt)
+        finishedAt = try? c.decode(Date.self, forKey: .finishedAt)
+    }
 }
 
 /// A single execution of a workflow. Persisted under workflows/<workflowID>/runs/<runID>.json.

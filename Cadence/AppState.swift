@@ -1064,6 +1064,55 @@ final class AppState: ObservableObject {
         setArtifact(.workflowRun(id: run.id))
     }
 
+    // MARK: AI builder
+
+    /// Ask Claude to assemble a workflow graph (blocks + edges) from a plain-language prompt.
+    func generateWorkflowGraph(from prompt: String) async -> Workflow? {
+        let kinds = WorkflowBlockKind.allCases.map { $0.rawValue }.joined(separator: ", ")
+        let ask = """
+        Return ONLY JSON for a Cadence workflow graph. Available block kinds: \(kinds).
+        Shape: {"name":"...","blocks":[{"kind":"<a kind>","title":"..."}],"edges":[[fromIndex,toIndex]]}
+        - blocks: ordered, indexed 0..n; choose kinds that fit the request; the first is usually "input".
+        - edges: [from,to] block-index pairs describing data flow.
+        Keep it minimal and correct. No prose.
+
+        REQUEST:
+        \(prompt)
+        """
+        do {
+            let obj = try await claude.promptJSON(ask, timeout: 120)
+            guard let d = obj as? [String: Any], let rawBlocks = d["blocks"] as? [[String: Any]] else { return nil }
+            var blocks: [WorkflowBlock] = []
+            for rb in rawBlocks {
+                guard let ks = rb["kind"] as? String, let kind = WorkflowBlockKind(rawValue: ks) else { continue }
+                blocks.append(WorkflowBlock(kind: kind, title: (rb["title"] as? String) ?? kind.label))
+            }
+            guard !blocks.isEmpty else { return nil }
+            var edges: [WorkflowEdge] = []
+            if let rawEdges = d["edges"] as? [[Any]] {
+                for pair in rawEdges where pair.count == 2 {
+                    if let f = (pair[0] as? Int) ?? (pair[0] as? Double).map(Int.init),
+                       let t = (pair[1] as? Int) ?? (pair[1] as? Double).map(Int.init),
+                       f >= 0, f < blocks.count, t >= 0, t < blocks.count {
+                        edges.append(WorkflowEdge(from: blocks[f].id, to: blocks[t].id))
+                    }
+                }
+            }
+            return Workflow(name: (d["name"] as? String) ?? "AI workflow", summary: prompt,
+                            blocks: blocks, edges: edges)
+        } catch {
+            addAmbient(AmbientEvent(kind: .error, text: "AI builder failed: \(error.localizedDescription)", at: Date(), target: nil))
+            return nil
+        }
+    }
+
+    /// Generate a workflow from a prompt, persist it, and open the builder.
+    func createWorkflowFromAI(prompt: String) async {
+        guard let wf = await generateWorkflowGraph(from: prompt) else { return }
+        saveWorkflow(wf)
+        setArtifact(.workflowBuilder(id: wf.id))
+    }
+
     // MARK: code blocks (Generate / Validate / standalone Run)
 
     /// Agent writes the block's Python from its intent + I/O contract. Returns the code ("" on error).
