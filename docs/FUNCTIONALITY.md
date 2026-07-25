@@ -13,13 +13,13 @@ What each part of Cadence *does*. No UI/CSS talk. Just the mechanics behind ever
 
 ---
 
-## 1. What Cadence is (in one paragraph)
+## What Cadence is (in one paragraph)
 
 A personal sprint dashboard for a single dev on a 2-week Linear-style cadence. Every ticket, exploration, and finding lives as plain files on disk. A Claude agent (via the `claude -p` CLI, with native Read/Grep/Glob/`git` tools scoped to your repos) helps you plan, expand tickets, index repos, and draft daily standup updates — always with human preview/approve before mutations. Data survives quit/relaunch. No external cloud DB, no API-key billing (uses your Claude subscription CLI).
 
 ---
 
-## 2. Core concepts (the nouns)
+## Core concepts (the nouns)
 
 These are the core models, persisted as files on disk. Everything else in the app is a view onto them.
 
@@ -66,50 +66,7 @@ Everything the app can do reduces to reading and writing these nodes/edges.
 
 ---
 
-## 3. The chat pane (`AgentChatView`) — the primary surface
-
-Persistent 400px column on the left side of the window. Always visible. Not a modal.
-
-### What it does
-- Multi-conversation. Header dropdown lists every conversation with relative "updated" time; you can delete conversations from there, or start a new one with the `+` button. First user message auto-becomes the conversation title.
-- Speech-to-text mic (SFSpeechRecognizer + AVAudioEngine). Tap mic → transcript streams into the input field live. First tap prompts macOS permission for mic + speech recognition.
-- **Every user message goes through the ReAct agent flow (not one-shot):**
-  1. Cadence builds a system prompt naming every available MCP tool and every action kind the agent can propose.
-  2. Cadence invokes `claude -p <user-msg> --mcp-config Helpers/mcp_config.json --output-format stream-json --allowedTools mcp__cadence__*` — passing your Claude Max/Pro OAuth token via keychain; no API-key billing.
-  3. Claude runs a ReAct loop: `thought → tool_use → observe → thought → …` for up to N turns. It can call any exposed MCP tool: `list_tickets`, `get_ticket`, `find_files`, `find_symbols`, `read_file_head`, `graph_around`, `find_functionality`, etc.
-  4. Cadence parses stream-json events in real time — every `tool_use` fires an update in the live status bar under the header showing which tool is running now, total call count, elapsed time. This is the streaming spinner.
-  5. Claude's final message must be JSON: either `{"kind":"reply","text":"…"}` (info answer) or `{"kind":"propose","reply":"…","actions":[…]}` (mutation proposal).
-- **Preview panel.** When Claude proposes actions, the pane grows a proposal panel (max 320px tall) between conversation and composer. Every action is a checkbox row with a plain-English summary. Additive actions are pre-selected; destructive actions (only `delete_ticket` today) start unchecked and are tinted red. Bottom row: `Reject` and `Apply N` (gradient primary button, ⌘⏎ shortcut). Apply routes each action through `AgentDispatcher` which performs the graph write and refreshes app state; failures produce `✗ <summary> — <error>` in chat, successes produce `✓ <summary>`.
-- Persistent history: chat is saved to `chats.json` after every append (capped at last 500 entries per conversation). Loaded in `AppState.init()`.
-- Full conversation history is passed to Claude on every turn (last 20 turns as `CONVERSATION SO FAR`) so it has memory across turns even though `claude -p` is stateless.
-
-### Actions the agent can propose (the mutation vocabulary)
-Grouped, all previewed and approved:
-
-**Tickets:**
-- `add_ticket {id, title, priority, status, estimate, assignee, labels[], project, sprint, description}`
-- `update_ticket {id, fields}`
-- `move_ticket {id, to_status}`
-- `reprioritize {id, to_priority, reason}`
-- `add_comment {ticket_id, body}`
-- `add_project`, `add_sprint`, `delete_ticket` (destructive)
-
-**Code graph:**
-- `index_repo {path, name?, excludes?}` — indexer walks `git ls-files`, hashes files, extracts symbols
-- `reindex_repo {repo_id}` — re-runs indexer, flags files whose git_sha advanced
-- `link_ticket_repo`, `link_ticket_file {ticket_id, file_query, note}` — file_query is resolved via `find_files` at dispatch time
-- `add_doctrine {title, content, confidence, source, tags, repo_id?, file_id?, ticket_id?}`
-
-**Functionality graph (canonical concept namespace):**
-- `add_functionality {name, description}` — description is required rich markdown (`## Purpose`, `## Key files`, `## Constraints`, `## Related concepts`)
-- `update_functionality {name, new_name?, description?}` — enrich existing thin descriptions
-- `link_ticket_functionality {ticket_id, functionality_name, note}` — dispatcher fuzzy-matches existing (case-insensitive CONTAINS) before creating, kills duplicates
-- `link_file_functionality {file_query, functionality_name}` — resolves both sides
-- `link_functionalities {from_name, to_name, kind, note}` — `kind ∈ {depends_on, part_of, related_to}` for hierarchy + dependency graph
-
----
-
-## 4. Dashboard
+## Dashboard
 
 The default landing route.
 
@@ -129,7 +86,7 @@ The default landing route.
 
 ---
 
-## 5. Kanban
+## Kanban
 
 - Five columns: Backlog, Todo, In Progress, In Review, Done. Column header shows a colored status dot + count badge.
 - Cards sorted by priority within column (P0 top). Card content: priority chip, blocker warning if applicable, ticket ID, title, labels (up to 3), estimate in hours, assignee.
@@ -143,7 +100,7 @@ The default landing route.
 
 ---
 
-## 6. Tickets (table view)
+## Tickets (table view)
 
 Row-per-ticket table:
 - Filter pills top: All / per status.
@@ -154,7 +111,7 @@ Row-per-ticket table:
 
 ---
 
-## 7. Sprints
+## Sprints
 
 Single card view of the current sprint:
 - Status dot (red if ≤3d left).
@@ -164,7 +121,7 @@ Single card view of the current sprint:
 
 ---
 
-## 8. Projects
+## Projects
 
 Groups all tickets by their `project` field (`—` for un-projected). Each group is a card with:
 - Folder icon + project key.
@@ -175,7 +132,7 @@ Reads from `Ticket.project` in memory (populated by the paste-sprint intake or a
 
 ---
 
-## 9. Digest
+## Digest
 
 Full-page editor for today's daily-standup Slack draft.
 - Header actions: Regenerate, Copy to Clipboard.
@@ -192,32 +149,7 @@ Full-page editor for today's daily-standup Slack draft.
 
 ---
 
-## 10. Graph explorer (`GraphExplorerView` + `ForceGraphCanvas`)
-
-Three-column route for exploring the knowledge graph directly.
-
-- **Left index (260px).** Lists every Repo, Ticket, Doctrine in the DB. Click row → focus that node.
-- **Center canvas.** Force-directed physics graph:
-  - Focus node at center (pinned, large, glowing).
-  - 1-hop neighbors radiate outward (Repo → File edges, Ticket → File edges, Ticket → Functionality edges, Functionality → Functionality edges, etc.).
-  - Physics loop @ 40 FPS: Coulomb-like repulsion between all node pairs (`k_rep = 22000, F = k/d²`), Hookean spring attraction along edges (rest length 130), 0.008× center gravity, 0.86 damping. Cooling factor drops to 0.6 after 200 iterations so layout settles.
-  - **Drag a node** → pins it (📌 badge). Position freezes; physics keeps flowing around it.
-  - **Double-click a node** → unpins.
-  - **Drag empty background** → pan.
-  - **Pinch / scroll** → zoom (0.3× to 3×). Zoom controls bottom-right also expose +/−/reset.
-  - **Filter chips** top: colored per node type. Click a chip to hide that type; empty selection = show all.
-  - **Click a neighbor** → re-centers on it and pushes onto nav history so ⌘[ backs out.
-- **Right detail panel (320px).**
-  - Node type chip, label, id.
-  - For Ticket nodes: two buttons — `Open detail` (reopens ticket sheet) and `Expand w/ context` (fires an agent prompt to expand the ticket via MCP).
-  - Attribute table: every field of the node from Kuzu.
-  - Edge counts: `EDGE_NAME:direction → N`, so you can see e.g. `TICKET_WORKS_ON:in → 12` = 12 tickets touch this functionality.
-
-Colors are shared with the `.typeColor` map: Ticket=indigo, File=green, Repo=amber, Doctrine=purple, Functionality=violet, Symbol=grey.
-
----
-
-## 11. Ticket detail (sheet modal)
+## Ticket detail (sheet modal)
 
 Opens over the app when you click a ticket anywhere.
 
@@ -279,33 +211,22 @@ Capped at 15 actions, precision over recall. All actions land in the proposal pa
 
 ---
 
-## 12. Settings
+## Settings
 
 Read-only display of the runtime environment:
-- Paths: Kuzu DB, attachments dir, digest archive dir, kuzu_helper.py, claude CLI.
+- Paths: app-support data dir (issues, repos.json, workflows, attachments, digests), claude CLI.
 - Schedule: 09:00 morning brief, 13:45 digest draft, 14:00 auto-clipboard, hourly idle scan, hourly deadline scan.
 - Keyboard shortcuts: ⇧⌘V paste sprint, ⇧⌘D copy digest, ⌘K palette, ⌘[/⌘] back/forward.
 
 ---
 
-## 13. Command palette (⌘K)
-
-Overlay with three sections:
-- **Navigate.** One entry per route (Dashboard / Kanban / Tickets / Sprints / Projects / Digest / Graph / Settings).
-- **Actions.** Paste Sprint, Generate Digest, Copy Digest, Refresh.
-- **Tickets.** Up to 20 filtered by title/id.
-
-Filter box on top. Enter runs first match. ESC or backdrop-click closes. Global ⌘K binding via a hidden `NSViewRepresentable` that intercepts the key equivalent.
-
----
-
-## 14. Back/Forward navigation
+## Back/Forward navigation
 
 Top bar chevrons + ⌘[ / ⌘]. AppState maintains `navBack` and `navForward` stacks of `NavHistoryEntry(routeRaw, focusedType?, focusedId?)`. Every route change and every focus change pushes an entry and clears forward. Back pops back and pushes onto forward. Graph-navigation trails (click through node → node → node) are fully rewindable.
 
 ---
 
-## 15. Paste Sprint intake (`PasteSprintView`)
+## Paste Sprint intake (`PasteSprintView`)
 
 ⇧⌘V or the toolbar button opens a modal:
 - Sprint name (auto: `Sprint N` where N = week/2 + 1).
@@ -317,7 +238,7 @@ Top bar chevrons + ⌘[ / ⌘]. AppState maintains `navBack` and `navForward` st
 
 ---
 
-## 16. Scheduler + notifications
+## Scheduler + notifications
 
 `Scheduler` runs an in-app `Timer` every 60s while the app is alive:
 - **09:00** — `morningBrief`. Refreshes state, computes top-3 open tickets by priority, posts a system notification with sprint days-left in the title.
@@ -331,29 +252,7 @@ Notifications go through `Notifier` which uses `UNUserNotificationCenter`. First
 
 ---
 
-## 17. Kuzu graph storage (`Helpers/kuzu_helper.py`)
-
-Long-running Python subprocess owned by the Swift `KuzuBridge`. On startup it:
-1. Opens `~/Library/Application Support/Cadence/graph.kuzu` with a `kuzu.Database`.
-2. Runs `CREATE NODE TABLE IF NOT EXISTS …` / `CREATE REL TABLE IF NOT EXISTS …` for every schema entity. Additive — never destructive.
-3. Starts a **Unix socket server** at `~/Library/Application Support/Cadence/helper.sock` on a background thread, guarded by a threading lock that serializes with the stdin protocol.
-4. Reads newline-delimited JSON commands on stdin, executes them against Kuzu inside the same lock, writes JSON responses. This is what the Swift app uses.
-
-Ops it exposes (`handle(op, args)`):
-- CRUD: `add_project`, `add_sprint`, `add_ticket`, `update_ticket`, `move_ticket`, `reprioritize`, `add_comment`, `add_attachment`.
-- Queries: `list_tickets`, `get_ticket`, `status_changes_since`, `idle_tickets`, `current_sprint`, `ticket_history`.
-- Repo: `add_repo`, `index_repo` (walks git, hashes files, extracts symbols via language-specific regex), `list_repos`, `repo_files`, `find_files`.
-- Links: `link_ticket_repo`, `link_ticket_file`, `ticket_linked`, `stale_ticket_links`.
-- Doctrines: `add_doctrine`, `list_doctrines`.
-- Graph traversal: `graph_around(type, id)` — returns focus node + 1-hop neighbors (capped 40 per edge kind) + totals.
-- Symbols: `find_symbols`, `list_symbols_for_file`.
-- Functionalities: `add_functionality`, `update_functionality`, `find_functionality` (case-insensitive fuzzy), `list_functionalities`, `link_ticket_functionality`, `link_file_functionality`, `link_symbol_functionality`, `link_functionalities`, `get_functionality` (returns node + every incoming/outgoing edge).
-
-**Stale detection.** When you link a ticket to a file, we snapshot `File.git_sha` into the edge as `linked_git_sha`. `stale_ticket_links` returns every edge where the current `File.git_sha` differs. Dashboard surfaces these; ticket detail's Linked tab renders per-file warnings.
-
----
-
-## 18. Symbol extraction (during `index_repo`)
+## Symbol extraction (during `index_repo`)
 
 Regex-based, language-aware (Python, Swift, TypeScript/JS, Go, Rust). For each supported file:
 - Python: `def`, `async def`, `class`.
@@ -366,7 +265,7 @@ Every match becomes a `Symbol` node + a `DEFINED_IN` edge to the parent File. Sy
 
 ---
 
-## 19. Claude bridge (`ClaudeBridge`)
+## Claude bridge (`ClaudeBridge`)
 
 Wraps three modes of `claude -p` invocation:
 
@@ -378,34 +277,21 @@ All three shell out to `/opt/homebrew/bin/claude` which authenticates via OAuth 
 
 ---
 
-## 20. MCP server (`Helpers/cadence_mcp.py`)
+## Persistence
 
-Spawned by `claude` when agent mode runs. Read-only. Talks to `kuzu_helper.py` via the Unix socket (`helper.sock`). Exposes these tools to Claude:
-
-- `list_tickets`, `get_ticket`, `ticket_linked`, `ticket_history`
-- `list_repos`, `repo_files`, `find_files`, `read_file_head`
-- `graph_around`, `list_doctrines`
-- `current_sprint`, `stale_ticket_links`
-- `find_symbols`, `list_symbols_for_file`
-- `list_functionalities`, `find_functionality`, `get_functionality`
-
-Why read-only: writes always go through Swift's `AgentDispatcher` so the propose/approve invariant is never bypassed. Claude can research iteratively but must return proposed mutations as the final message.
-
----
-
-## 21. Persistence
-
-Everything survives quit + relaunch:
-- **`~/Library/Application Support/Cadence/graph.kuzu`** — the full graph (all node/edge state).
+Everything survives quit + relaunch, as plain files under `~/Library/Application Support/Cadence/`:
+- **`issues/<ID>/`** — one folder per ticket (`issue.md` + exploration notes).
+- **`repos.json`** — indexed repos.
+- **`workflows/<ID>/`** — workflow definitions + `runs/<runID>.json`.
+- **`config.json`** — settings.
 - **`chats.json`** — conversations, migrating old `chat.json` if found. Written after every chat append.
 - **`ui_state.json`** — last selected route + digest draft. Restored in `AppState.init()`.
 - **`attachments/<ticket_id>/`** — ticket file attachments.
 - **`digests/`** — archived Slack drafts (per day).
-- **`helper.sock`** — recreated every launch by kuzu_helper.
 
 ---
 
-## 22. Fuzzy-match / dedupe (why Functionality nodes stay canonical)
+## Fuzzy-match / dedupe (why Functionality nodes stay canonical)
 
 Every functionality-related agent action goes through the dispatcher's dedupe step:
 1. `bridge.findFunctionality(query: name, limit: 3)` — case-insensitive CONTAINS match on `name` and `description`.
@@ -416,7 +302,7 @@ This is why proposing `link_ticket_functionality "worker pool"` won't create a d
 
 ---
 
-## 23. Critique agent
+## Critique agent
 
 Dashboard `Run Critique` opens a fresh chat and fires a specialized system prompt telling Claude to:
 1. Enumerate every ticket via `list_tickets` + `get_ticket`; flag missing fields (verification, results, estimate, linked files) and status-idle >7 days.
@@ -430,7 +316,7 @@ Final reply is structured markdown: Summary / Blockers / Under-specified / Stale
 
 ---
 
-## 24. Linear ticket export
+## Linear ticket export
 
 Two paths:
 - **Per-ticket:** `Copy as Linear` button in ticket detail (see §11). Formats one ticket → clipboard → paste into Linear's issue create.
@@ -438,13 +324,13 @@ Two paths:
 
 ---
 
-## 25. Speech recognition
+## Speech recognition
 
 `SpeechRecognizer` uses `SFSpeechRecognizer` (`en-US`) + `AVAudioEngine`. Mic button in chat pane toggles listening. Live partial transcripts flow into the input field via `onChange(of: speech.transcript)`. First tap prompts two macOS permissions: microphone + speech recognition. Auto-stops on message send.
 
 ---
 
-## 26. What Cadence is *not*
+## What Cadence is *not*
 
 - Not multi-user. Single-dev, single-machine. No sync, no server, no auth. Everything is local files.
 - Not a Linear replacement — it feeds you Linear-paste output so you can push your day's changes into Linear (or wherever your team tracks).
@@ -454,7 +340,7 @@ Two paths:
 
 ---
 
-## 27. Typical daily loop
+## Typical daily loop
 
 1. **09:00** — Morning brief notif fires; app shows top-3 open tickets + days-left.
 2. Move cards on kanban as work progresses. Every move logs a `StatusChange`.
