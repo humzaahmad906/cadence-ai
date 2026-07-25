@@ -27,13 +27,24 @@ graph from a plain-language prompt.
 
 ## The graph model
 
-- **`Workflow`** = `{ name, summary, blocks: [WorkflowBlock], edges: [WorkflowEdge], repoIds }`.
+- **`Workflow`** = `{ name, summary, blocks, edges, repoIds, branches }` — `branches` maps a scoped
+  repo id → the branch to explore ("" = default checkout).
 - **`WorkflowBlock`** = `{ id, kind, title, config }`. `config` also carries the node's canvas
   position (`x`,`y`) and its **named ports** (`inputPorts`, `outputPorts` — empty ⇒ a single default
   `input`/`output`).
 - **`WorkflowEdge`** = `{ from, to, fromPort, toPort }` — a directed, port-to-port connection.
 - Codable models use **tolerant decoders**, so adding fields never breaks a `workflow.json` written
   by an older build.
+
+### Repos & branches
+
+A workflow is scoped to one or more indexed repos, optionally each pinned to a **branch**. Agent
+blocks (and the description/solution/repoReport presets) get `--add-dir` access only to the tagged
+repos; the chosen branch is passed to the agent as context (the `{{repos}}` block lists
+`name|path|branch=…`). Tag them from the **Repos** button in the builder's top bar (or the workflow
+settings when no node is selected); the canvas shows a top strip of `repo @ branch`. **Running with
+no repo tagged is guarded** — an alert offers *Tag a repo* / *Run anyway* / *Cancel*, so agent/code
+blocks never roam your filesystem unscoped by accident.
 
 ### Block kinds
 
@@ -90,18 +101,20 @@ Gate→amber) and shape (data-ish kinds render as a parallelogram, the rest as r
 
 1. Open **Workflows** → **New from template** / **Blank** (or **AI builder** to generate a graph from a
    prompt) → opens the builder.
-2. **Build** mode: add blocks from the left palette; drag nodes to arrange; click an **output port**
-   then an **input port** to wire an edge (hover an edge for its × to delete). Click a node to
-   configure it in the right inspector (model, effort, repo access, ports, and kind-specific
-   settings). Trackpad: **pinch to zoom**, **two-finger scroll to pan**; or use the zoom cluster.
+2. **Build** mode: tag the workflow's **repos + branches** from the top-bar **Repos** button; add
+   blocks from the left palette; drag nodes to arrange; click an **output port** then an **input
+   port** to wire an edge (hover an edge for its × to delete). Click a node to configure it in the
+   right inspector (model, effort, per-block repo access, ports, and kind-specific settings).
+   Trackpad: **pinch to zoom**, **two-finger scroll to pan**; or use the zoom cluster.
 3. **Run** (top bar): fills any empty inputs, then executes. Nodes light up — spinner while running,
    **green ✓ when done**, red ✗ on failure, amber ✋ when paused for review.
 4. **Debug** mode: the right panel shows the live run — an I/O card (input/output JSON) + a run log
    with per-block timings, plus approve/reject when a review block pauses.
-5. **Right-click a node** for **Configure**, **View output** (renders markdown / images), or
-   **Re-run from here**.
+5. **Right-click a node** for **Configure**, **View output** (renders markdown / images, with a
+   **Copy** button), or **Re-run from here**.
 6. **History**: each card in the Workflows list has a **History** menu of past runs; open one to
-   inspect its per-block outputs.
+   inspect and **copy** each block's output. Outputs are copyable everywhere they appear — the debug
+   panel's INPUT/OUTPUT, the View-output sheet, and history runs.
 
 ### The `code` block
 
