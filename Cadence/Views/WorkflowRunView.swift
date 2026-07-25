@@ -83,6 +83,13 @@ struct WorkflowRunView: View {
                     Text("\(index + 1). \(block.title)").font(DS.Font.headline)
                     Chip(block.kind.label, tint: DS.purple, filled: false)
                     Spacer()
+                    if !block.output.isEmpty {
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(block.output, forType: .string)
+                        } label: { Image(systemName: "doc.on.doc").font(.system(size: 11)) }
+                        .buttonStyle(.plain).foregroundStyle(DS.textTertiary).help("Copy output")
+                    }
                     Text(block.status.rawValue).font(DS.Font.micro).foregroundStyle(DS.textTertiary)
                 }
                 if let err = block.error, !err.isEmpty {
