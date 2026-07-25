@@ -179,6 +179,7 @@ struct WorkflowCanvasView: View {
             NodeCard(block: block, selected: selectedBlockId == block.id, status: rs?.status)
                 .position(x: tl.x + nodeWidth / 2, y: tl.y + nodeHeight / 2)
                 .zIndex(selectedBlockId == block.id ? 1 : 0)
+                .onTapGesture { selectedBlockId = block.id }
                 .gesture(nodeGesture(block: block, origin: tl))
                 .contextMenu {
                     Button { selectedBlockId = block.id } label: { Label("Configure", systemImage: "slider.horizontal.3") }
@@ -249,18 +250,21 @@ struct WorkflowCanvasView: View {
     // MARK: - Node move gesture
 
     private func nodeGesture(block: WorkflowBlock, origin: CGPoint) -> some Gesture {
-        DragGesture(minimumDistance: 0, coordinateSpace: .named(screenSpace))
+        // minimumDistance 4 so a plain click is NOT captured here — it falls through to the port's
+        // tap (click-to-connect) or the node's own tap-to-select. Only a real drag moves the node.
+        DragGesture(minimumDistance: 4, coordinateSpace: .named(screenSpace))
             .onChanged { value in
-                if activeNodeDrag?.id != block.id {
+                let base: CGPoint
+                if let drag = activeNodeDrag, drag.id == block.id {
+                    base = drag.origin
+                } else {
+                    base = origin
                     activeNodeDrag = NodeDrag(id: block.id, origin: origin)
                     selectedBlockId = block.id
                 }
-                guard let drag = activeNodeDrag else { return }
-                // Small threshold: a click selects; only a real drag moves the node.
-                let moved = hypot(value.translation.width, value.translation.height) > 3
-                if moved, let i = workflow.blocks.firstIndex(where: { $0.id == block.id }) {
-                    workflow.blocks[i].config.x = Double(drag.origin.x + value.translation.width / zoom)
-                    workflow.blocks[i].config.y = Double(drag.origin.y + value.translation.height / zoom)
+                if let i = workflow.blocks.firstIndex(where: { $0.id == block.id }) {
+                    workflow.blocks[i].config.x = Double(base.x + value.translation.width / zoom)
+                    workflow.blocks[i].config.y = Double(base.y + value.translation.height / zoom)
                 }
             }
             .onEnded { _ in activeNodeDrag = nil }
