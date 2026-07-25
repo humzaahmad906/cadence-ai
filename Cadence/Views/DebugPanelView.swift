@@ -1,5 +1,6 @@
 import SwiftUI
 import Foundation
+import AppKit
 
 /// Right-panel debugger for Debug mode. Read-only: it reflects `appState.activeRun`
 /// and never mutates state.
@@ -84,7 +85,17 @@ struct DebugPanelView: View {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let isEmpty = trimmed.isEmpty
         return VStack(alignment: .leading, spacing: DS.space1) {
-            sectionLabel(label)
+            HStack {
+                sectionLabel(label)
+                Spacer()
+                if !isEmpty {
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(text, forType: .string)
+                    } label: { Image(systemName: "doc.on.doc").font(.system(size: 10)) }
+                    .buttonStyle(.plain).foregroundStyle(DS.textTertiary).help("Copy \(label.lowercased())")
+                }
+            }
             ScrollView {
                 Text(isEmpty ? "no \(label.lowercased()) yet" : text)
                     .font(DS.Font.mono)

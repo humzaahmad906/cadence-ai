@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// The flagship node-graph canvas for a workflow (Build mode).
 ///
@@ -71,6 +72,11 @@ struct WorkflowCanvasView: View {
         appState.activeRun?.blocks.first(where: { $0.id == id })
     }
 
+    private func copyToClipboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
     @ViewBuilder private var outputSheet: some View {
         let block = workflow.blocks.first(where: { $0.id == outputViewerId })
         let out = outputViewerId.flatMap { runState($0) }?.output ?? ""
@@ -78,6 +84,8 @@ struct WorkflowCanvasView: View {
             HStack {
                 Text(block?.title.isEmpty == false ? block!.title : (block?.kind.label ?? "Output")).font(DS.Font.title)
                 Spacer()
+                Button { copyToClipboard(out) } label: { Label("Copy", systemImage: "doc.on.doc") }
+                    .buttonStyle(SecondaryButtonStyle()).disabled(out.isEmpty)
                 Button { outputViewerId = nil } label: { Image(systemName: "xmark") }.buttonStyle(.borderless)
             }
             if out.isEmpty {
