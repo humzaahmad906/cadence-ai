@@ -15,6 +15,7 @@ struct WorkflowBuilderView: View {
     @State private var pendingInputIds: [UUID] = []
     @State private var inputDrafts: [UUID: String] = [:]
     @State private var showNoRepoWarning = false
+    @State private var showRepoPopover = false
 
     enum Mode { case build, debug }
 
@@ -168,6 +169,7 @@ struct WorkflowBuilderView: View {
             .pickerStyle(.segmented).fixedSize().labelsHidden()
             Spacer()
             if mode == .build {
+                reposButton
                 Button { aiOpen = true } label: { Label("AI builder", systemImage: "sparkles") }
                     .buttonStyle(SecondaryButtonStyle())
             } else {
@@ -181,6 +183,20 @@ struct WorkflowBuilderView: View {
         .padding(DS.space3)
         .background(DS.cardBG)
         .overlay(Rectangle().fill(DS.border).frame(height: 1), alignment: .bottom)
+    }
+
+    /// Always-visible repo/branch tagging in the top bar.
+    private var reposButton: some View {
+        let count = draft?.repoIds.count ?? 0
+        return Button { showRepoPopover.toggle() } label: {
+            Label(count > 0 ? "Repos (\(count))" : "Tag repo",
+                  systemImage: count > 0 ? "folder.fill" : "folder.badge.questionmark")
+        }
+        .buttonStyle(SecondaryButtonStyle())
+        .popover(isPresented: $showRepoPopover, arrowEdge: .bottom) {
+            ScrollView { repoPicker.padding(DS.space4) }
+                .frame(width: 340).frame(maxHeight: 440)
+        }
     }
 
     // MARK: left rail (workflows + block palette)
