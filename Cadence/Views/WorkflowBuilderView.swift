@@ -14,6 +14,7 @@ struct WorkflowBuilderView: View {
     @State private var showInputPrompt = false
     @State private var pendingInputIds: [UUID] = []
     @State private var inputDrafts: [UUID: String] = [:]
+    @State private var showNoRepoWarning = false
 
     enum Mode { case build, debug }
 
@@ -70,12 +71,27 @@ struct WorkflowBuilderView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(DS.contentBG)
         .sheet(isPresented: $showInputPrompt) { inputPromptSheet }
+        .alert("No repo tagged", isPresented: $showNoRepoWarning) {
+            Button("Run anyway") { proceedRun() }
+            Button("Tag a repo") { selectedBlockId = nil }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This workflow has no repo tagged, so agent/code blocks run unscoped and may read unintended files. Tag one in the workflow settings (right panel), or run anyway.")
+        }
     }
 
     // MARK: run gating (prompt for empty input blocks before running)
 
     private func attemptRun() {
         save()
+        if (draft?.repoIds.isEmpty ?? true) && !(draft?.blocks.isEmpty ?? true) {
+            showNoRepoWarning = true   // guard: don't let agents roam without a scoped repo
+            return
+        }
+        proceedRun()
+    }
+
+    private func proceedRun() {
         let empties = (draft?.blocks ?? []).filter {
             $0.kind == .input && $0.config.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
@@ -297,12 +313,43 @@ struct WorkflowBuilderView: View {
                     .font(DS.Font.caption).foregroundStyle(DS.textTertiary)
             } else {
                 FlowLayout(spacing: 6) {
-                    ForEach(appState.repos) { r in
-                        repoChip(r)
+                    ForEach(appState.repos) { r in repoChip(r) }
+                }
+                ForEach(draft?.repoIds ?? [], id: \.self) { rid in
+                    if let r = appState.repos.first(where: { $0.id == rid }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.triangle.branch").font(.caption2).foregroundStyle(DS.textTertiary)
+                            Text(r.name).font(DS.Font.caption).foregroundStyle(DS.textSecondary)
+                            Spacer()
+                            branchMenu(for: rid)
+                        }
+                        .onAppear { Task { await appState.loadBranches(for: rid) } }
                     }
                 }
             }
         }
+    }
+
+    private func branchMenu(for rid: String) -> some View {
+        let catalog = appState.branchCatalog[rid] ?? BranchCatalog()
+        let current = draft?.branches[rid] ?? ""
+        return Menu {
+            Button("default") { setBranch(rid, "") }
+            ForEach(catalog.branches, id: \.self) { b in Button(b) { setBranch(rid, b) } }
+        } label: {
+            HStack(spacing: 3) {
+                Text(current.isEmpty ? "default" : current).font(DS.Font.mono).foregroundStyle(DS.textPrimary)
+                Image(systemName: "chevron.down").font(.caption2).foregroundStyle(DS.textTertiary)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(RoundedRectangle(cornerRadius: DS.radius).fill(DS.insetBG))
+        }
+        .menuStyle(.borderlessButton).fixedSize()
+    }
+
+    private func setBranch(_ rid: String, _ branch: String) {
+        guard draft != nil else { return }
+        draft!.branches[rid] = branch.isEmpty ? nil : branch
     }
 
     @ViewBuilder

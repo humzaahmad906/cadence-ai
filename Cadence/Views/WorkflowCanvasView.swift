@@ -58,6 +58,7 @@ struct WorkflowCanvasView: View {
             .background(TrackpadGestures(pan: $pan, zoom: $zoom, zoomRange: zoomMin...zoomMax))
             .overlay(alignment: .bottomLeading) { hintPill.padding(16) }
             .overlay(alignment: .bottomTrailing) { zoomCluster(size: geo.size).padding(16) }
+            .overlay(alignment: .top) { repoStrip.padding(.top, 12) }
             .onAppear { fitIfNeeded(geo.size) }
             .onChange(of: geo.size) { _, newValue in fitIfNeeded(newValue) }
             .sheet(isPresented: Binding(get: { outputViewerId != nil },
@@ -367,6 +368,34 @@ struct WorkflowCanvasView: View {
     }
 
     // MARK: - Floating controls
+
+    /// Top strip: which repos (and branches) this workflow explores, or a "no repo tagged" warning.
+    private var repoStrip: some View {
+        HStack(spacing: 6) {
+            if workflow.repoIds.isEmpty {
+                Label("No repo tagged — agents run unscoped", systemImage: "exclamationmark.triangle.fill")
+                    .font(DS.Font.micro).foregroundStyle(DS.warn)
+            } else {
+                Image(systemName: "folder.fill").font(.caption2).foregroundStyle(DS.accent)
+                ForEach(workflow.repoIds, id: \.self) { rid in
+                    if let r = appState.repos.first(where: { $0.id == rid }) {
+                        let br = workflow.branches[rid] ?? ""
+                        HStack(spacing: 3) {
+                            Text(r.name).font(DS.Font.micro).foregroundStyle(DS.textPrimary)
+                            Image(systemName: "arrow.triangle.branch").font(.system(size: 8)).foregroundStyle(DS.textTertiary)
+                            Text(br.isEmpty ? "default" : br).font(DS.Font.mono).foregroundStyle(DS.textSecondary)
+                        }
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(Capsule().fill(DS.subtleFill))
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(DS.border, lineWidth: 1))
+        .shadow(color: DS.shadowColor, radius: 6, y: 2)
+    }
 
     private var hintPill: some View {
         HStack(spacing: 7) {

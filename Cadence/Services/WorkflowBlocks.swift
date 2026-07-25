@@ -104,9 +104,12 @@ enum AgentBlockKit {
         return s
     }
 
-    static func repoDescription(_ appState: AppState, repoIds: [String]) -> String {
+    static func repoDescription(_ appState: AppState, repoIds: [String], branches: [String: String] = [:]) -> String {
         appState.repos.filter { repoIds.contains($0.id) }
-            .map { "\($0.id)|\($0.name)|\($0.path)" }
+            .map { r in
+                let br = branches[r.id] ?? ""
+                return "\(r.id)|\(r.name)|\(r.path)|branch=\(br.isEmpty ? "(default)" : br)"
+            }
             .joined(separator: "\n")
     }
 
@@ -144,7 +147,7 @@ struct InputBlockHandler: WorkflowBlockHandler {
 struct AgentPromptHandler: WorkflowBlockHandler {
     func run(_ block: WorkflowBlock, context: BlockRunContext) async throws -> String {
         let repoIds = block.config.useRepos ? context.workflow.repoIds : []
-        let repoBlock = AgentBlockKit.repoDescription(context.appState, repoIds: repoIds)
+        let repoBlock = AgentBlockKit.repoDescription(context.appState, repoIds: repoIds, branches: context.workflow.branches)
         let userMessage = AgentBlockKit.fill(block.config.promptTemplate, input: context.input, repoBlock: repoBlock, inputs: context.inputs)
         return try await AgentBlockKit.runAgent(context,
                                                 systemPrompt: block.config.systemPrompt,
@@ -274,6 +277,7 @@ struct CreateDescriptionHandler: WorkflowBlockHandler {
         let result = try await context.appState.descriptionAgent(
             taskTitle: title, sprintName: context.workflow.name,
             repoIds: block.config.useRepos ? context.workflow.repoIds : [],
+            branches: context.workflow.branches,
             model: block.config.model, effort: block.config.effort)
         let desc = result.description.isEmpty ? "_(no description produced)_" : result.description
         return "# \(title)\n\n\(desc)"
@@ -289,6 +293,7 @@ struct CreateSolutionHandler: WorkflowBlockHandler {
             taskTitle: title.isEmpty ? "Task" : title,
             description: context.input,
             repoIds: block.config.useRepos ? context.workflow.repoIds : [],
+            branches: context.workflow.branches,
             model: block.config.model, effort: block.config.effort)
         let sol = result.solution.isEmpty ? "_(no solution produced)_" : result.solution
         return "\(context.input)\n\n## Solution\n\n\(sol)"
@@ -371,7 +376,7 @@ struct RepoReportHandler: WorkflowBlockHandler {
     func run(_ block: WorkflowBlock, context: BlockRunContext) async throws -> String {
         let since = block.config.sinceRef.isEmpty ? "the last 2 weeks" : block.config.sinceRef
         let repoIds = block.config.useRepos ? context.workflow.repoIds : []
-        let repoBlock = AgentBlockKit.repoDescription(context.appState, repoIds: repoIds)
+        let repoBlock = AgentBlockKit.repoDescription(context.appState, repoIds: repoIds, branches: context.workflow.branches)
         let systemPrompt = """
         You are the Cadence repo reporter. Use Bash(git log:*), Bash(git show:*), Bash(git diff:*),
         Bash(git blame:*) plus Read/Grep/Glob to summarize development activity in the scoped repos:

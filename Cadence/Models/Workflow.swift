@@ -276,6 +276,7 @@ struct Workflow: Codable, Identifiable, Hashable {
     var blocks: [WorkflowBlock]
     var repoIds: [String]
     var edges: [WorkflowEdge]
+    var branches: [String: String]   // repoId → branch to explore ("" = default checkout)
     var createdAt: Date
     var updatedAt: Date
 
@@ -285,6 +286,7 @@ struct Workflow: Codable, Identifiable, Hashable {
          blocks: [WorkflowBlock] = [],
          repoIds: [String] = [],
          edges: [WorkflowEdge] = [],
+         branches: [String: String] = [:],
          createdAt: Date = Date(),
          updatedAt: Date = Date()) {
         self.id = id
@@ -293,6 +295,7 @@ struct Workflow: Codable, Identifiable, Hashable {
         self.blocks = blocks
         self.repoIds = repoIds
         self.edges = edges
+        self.branches = branches
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -300,7 +303,7 @@ struct Workflow: Codable, Identifiable, Hashable {
     // Tolerant decoder so adding fields (e.g. edges) doesn't break workflow.json written by
     // an older build.
     private enum CodingKeys: String, CodingKey {
-        case id, name, summary, blocks, repoIds, edges, createdAt, updatedAt
+        case id, name, summary, blocks, repoIds, edges, branches, createdAt, updatedAt
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -310,6 +313,7 @@ struct Workflow: Codable, Identifiable, Hashable {
         blocks = (try? c.decode([WorkflowBlock].self, forKey: .blocks)) ?? []
         repoIds = (try? c.decode([String].self, forKey: .repoIds)) ?? []
         edges = (try? c.decode([WorkflowEdge].self, forKey: .edges)) ?? []
+        branches = (try? c.decode([String: String].self, forKey: .branches)) ?? [:]
         createdAt = (try? c.decode(Date.self, forKey: .createdAt)) ?? Date()
         updatedAt = (try? c.decode(Date.self, forKey: .updatedAt)) ?? Date()
     }
