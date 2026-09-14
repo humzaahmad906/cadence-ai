@@ -80,6 +80,25 @@ final class WorkflowStore {
         return out.sorted { $0.createdAt > $1.createdAt }
     }
 
+    /// Every run across every workflow, newest first. Backs the activity log, which is a
+    /// single feed rather than a per-workflow history — the runs are already on disk, so this
+    /// scans rather than keeping a second copy of the same records.
+    func allRuns(limit: Int = 200) -> [WorkflowRun] {
+        guard let dirs = try? fm.contentsOfDirectory(at: CadencePaths.workflowsDir,
+                                                     includingPropertiesForKeys: nil) else { return [] }
+        var out: [WorkflowRun] = []
+        for dir in dirs {
+            let rd = dir.appendingPathComponent("runs")
+            guard let files = try? fm.contentsOfDirectory(at: rd, includingPropertiesForKeys: nil) else { continue }
+            for f in files where f.pathExtension == "json" {
+                guard let data = try? Data(contentsOf: f),
+                      let run = try? Self.decoder.decode(WorkflowRun.self, from: data) else { continue }
+                out.append(run)
+            }
+        }
+        return Array(out.sorted { $0.updatedAt > $1.updatedAt }.prefix(limit))
+    }
+
     func loadRun(workflowId: String, runId: String) -> WorkflowRun? {
         let url = runsDir(workflowId).appendingPathComponent("\(runId).json")
         guard let data = try? Data(contentsOf: url),

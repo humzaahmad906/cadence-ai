@@ -57,7 +57,7 @@ final class IssueStore {
         let now = ISO8601DateFormatter().string(from: Date())
         let created = prior["created"] ?? (ticket.created.isEmpty ? now : ticket.created)
 
-        var fm: [(String, String)] = [
+        let fm: [(String, String)] = [
             ("id", ticket.id),
             ("title", ticket.title),
             ("status", ticket.status.rawValue),

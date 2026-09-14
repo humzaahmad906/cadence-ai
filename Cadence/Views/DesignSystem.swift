@@ -281,3 +281,59 @@ struct SecondaryButtonStyle: ButtonStyle {
             .animation(.easeOut(duration: 0.12), value: hover)
     }
 }
+
+// MARK: - Wrapping row layout
+// Moved here from DraftReviewStackView when that view was removed; the workflow list and
+// builder still lay out their tag rows with it.
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxW = proposal.width ?? .infinity
+        var w: CGFloat = 0, h: CGFloat = 0, rowH: CGFloat = 0
+        for v in subviews {
+            let s = v.sizeThatFits(.unspecified)
+            if w + s.width > maxW {
+                h += rowH + spacing
+                w = 0; rowH = 0
+            }
+            w += s.width + spacing
+            rowH = max(rowH, s.height)
+        }
+        h += rowH
+        return CGSize(width: proposal.width ?? w, height: h)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, rowH: CGFloat = 0
+        for v in subviews {
+            let s = v.sizeThatFits(.unspecified)
+            if x + s.width > bounds.maxX {
+                x = bounds.minX
+                y += rowH + spacing
+                rowH = 0
+            }
+            v.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(s))
+            x += s.width + spacing
+            rowH = max(rowH, s.height)
+        }
+    }
+}
+
+// MARK: - Priority chip
+// Moved here from TicketCard when the board was removed; the ticket archive still uses it.
+struct PriorityChip: View {
+    let priority: Priority
+    var body: some View {
+        Chip(priority.rawValue, tint: tint)
+    }
+    private var tint: Color {
+        switch priority {
+        case .p0: return DS.danger
+        case .p1: return DS.warn
+        case .p2: return .yellow
+        case .p3: return DS.accent
+        case .p4: return .gray
+        }
+    }
+}

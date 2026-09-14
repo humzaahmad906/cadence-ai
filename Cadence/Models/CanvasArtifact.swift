@@ -1,38 +1,30 @@
 import Foundation
 
-/// One-canvas-at-a-time model. The chat drives it; the canvas renders it.
+/// One-canvas-at-a-time model. The header and the activity log drive it; the canvas renders it.
+///
+/// Deliberately small: Workflows, Day, and Log are the whole app. Tickets still exist on disk
+/// (workflows create them) but live off the home surface — reachable from a log row or from
+/// Settings → Archive, never from the header.
 enum CanvasArtifact: Hashable, Identifiable {
-    case kickoff                            // empty home: single prompt input, no chrome
-    case taskSplit                          // review agent-generated task list before wizard
-    case wizard                             // multi-step per-task workflow
-    case sprintStatus                       // once tickets exist: risk-first sprint view
-    case kanban                             // full board, drag-drop intact
-    case ticketsList(status: TicketStatus?) // filtered table view
-    case ticketDetail(id: String)           // single ticket editor
-    case draftStack                         // ticket draft review stack (signature flow A)
-    case digest                             // today's Slack draft
-    case doctrines                          // findings list
-    case workflows                          // block-based workflow library
+    case workflows                          // block-based workflow library — home
     case workflowBuilder(id: String)        // compose/edit one workflow
     case workflowRun(id: String)            // live run progress for one workflow
-    case settings                           // paths + schedule
+    case day                                // today's time blocks
+    case activity                           // everything that ran: workflow runs + day events
+    case ticketsList(status: TicketStatus?) // archive: tickets created by workflows
+    case ticketDetail(id: String)           // single ticket editor
+    case settings                           // paths + schedule + office network
     case empty(reason: String)              // first-run / recovered from error
 
     var id: String {
         switch self {
-        case .kickoff: return "kickoff"
-        case .taskSplit: return "task_split"
-        case .wizard: return "wizard"
-        case .sprintStatus: return "sprint_status"
-        case .kanban: return "kanban"
-        case .ticketsList(let s): return "tickets_list_\(s?.rawValue ?? "all")"
-        case .ticketDetail(let i): return "ticket_\(i)"
-        case .draftStack: return "draft_stack"
-        case .digest: return "digest"
-        case .doctrines: return "doctrines"
         case .workflows: return "workflows"
         case .workflowBuilder(let i): return "workflow_builder_\(i)"
         case .workflowRun(let i): return "workflow_run_\(i)"
+        case .day: return "day"
+        case .activity: return "activity"
+        case .ticketsList(let s): return "tickets_list_\(s?.rawValue ?? "all")"
+        case .ticketDetail(let i): return "ticket_\(i)"
         case .settings: return "settings"
         case .empty(let r): return "empty_\(r)"
         }
@@ -40,19 +32,13 @@ enum CanvasArtifact: Hashable, Identifiable {
 
     var title: String {
         switch self {
-        case .kickoff: return "Start"
-        case .taskSplit: return "Review tasks"
-        case .wizard: return "Wizard"
-        case .sprintStatus: return "Sprint status"
-        case .kanban: return "Kanban"
-        case .ticketsList(let s): return s.map { "Tickets · \($0.rawValue)" } ?? "Tickets"
-        case .ticketDetail(let i): return "Ticket \(i)"
-        case .draftStack: return "Review drafts"
-        case .digest: return "Digest"
-        case .doctrines: return "Doctrines"
         case .workflows: return "Workflows"
         case .workflowBuilder: return "Edit workflow"
         case .workflowRun: return "Workflow run"
+        case .day: return "Day"
+        case .activity: return "Log"
+        case .ticketsList(let s): return s.map { "Archive · \($0.rawValue)" } ?? "Archive"
+        case .ticketDetail(let i): return "Ticket \(i)"
         case .settings: return "Settings"
         case .empty: return "Cadence"
         }
@@ -61,19 +47,13 @@ enum CanvasArtifact: Hashable, Identifiable {
     /// Icon for header + ambient references
     var icon: String {
         switch self {
-        case .kickoff: return "sparkles"
-        case .taskSplit: return "list.bullet.rectangle"
-        case .wizard: return "wand.and.rays"
-        case .sprintStatus: return "flag.checkered"
-        case .kanban: return "rectangle.split.3x1"
-        case .ticketsList: return "list.bullet.rectangle"
-        case .ticketDetail: return "doc.text"
-        case .draftStack: return "square.stack"
-        case .digest: return "text.badge.checkmark"
-        case .doctrines: return "book.closed"
         case .workflows: return "flowchart"
         case .workflowBuilder: return "slider.horizontal.3"
         case .workflowRun: return "play.circle"
+        case .day: return "calendar.day.timeline.left"
+        case .activity: return "list.bullet.rectangle.portrait"
+        case .ticketsList: return "archivebox"
+        case .ticketDetail: return "doc.text"
         case .settings: return "gearshape"
         case .empty: return "sparkle"
         }

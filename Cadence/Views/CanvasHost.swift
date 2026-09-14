@@ -1,6 +1,9 @@
 import SwiftUI
 
-/// Central canvas that swaps in the current artifact view. Chat drives what appears here.
+/// Central canvas that swaps in the current artifact view.
+///
+/// Three destinations live in the header — Workflows, Day, Log — and nothing else. Tickets,
+/// runs, and builders are reached by clicking through from one of those three.
 struct CanvasHost: View {
     @EnvironmentObject var appState: AppState
 
@@ -33,31 +36,22 @@ struct CanvasHost: View {
             Text(appState.currentArtifact.title).font(DS.Font.title)
             Spacer()
 
-            // Quick jumps — few, chat is the primary router
-            Button { appState.setArtifact(.kickoff) } label: { Label("Start", systemImage: "sparkles") }
-                .buttonStyle(SecondaryButtonStyle())
-                .help("Draft new tickets from a prompt")
             Button { appState.setArtifact(.workflows) } label: { Label("Workflows", systemImage: "flowchart") }
                 .buttonStyle(SecondaryButtonStyle())
+                .keyboardShortcut("1", modifiers: [.command])
                 .help("Composable block-based workflows")
-            if !appState.tickets.isEmpty {
-                Button { appState.setArtifact(.sprintStatus) } label: { Label("Status", systemImage: "flag.checkered") }
-                    .buttonStyle(SecondaryButtonStyle())
-                Button { appState.setArtifact(.kanban) } label: { Label("Board", systemImage: "rectangle.split.3x1") }
-                    .buttonStyle(SecondaryButtonStyle())
-            }
-            if !appState.pendingDrafts.isEmpty {
-                Button { appState.setArtifact(.draftStack) } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "square.stack")
-                        Text("Drafts")
-                        Text("\(appState.pendingDrafts.count)")
-                            .font(DS.Font.micro).padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(Capsule().fill(DS.accent.opacity(0.2))).foregroundStyle(DS.accent)
-                    }
-                }
+            Button { appState.setArtifact(.day) } label: { Label("Day", systemImage: "calendar.day.timeline.left") }
                 .buttonStyle(SecondaryButtonStyle())
-            }
+                .keyboardShortcut("2", modifiers: [.command])
+                .help("Today's blocks")
+            Button { appState.setArtifact(.activity) } label: { Label("Log", systemImage: "list.bullet.rectangle.portrait") }
+                .buttonStyle(SecondaryButtonStyle())
+                .keyboardShortcut("3", modifiers: [.command])
+                .help("Everything that ran")
+
+            Button { appState.setArtifact(.settings) } label: { Image(systemName: "gearshape") }
+                .buttonStyle(SecondaryButtonStyle())
+                .help("Settings")
             Button { Task { await appState.refresh() } } label: { Image(systemName: "arrow.clockwise") }
                 .buttonStyle(SecondaryButtonStyle())
                 .help("Refresh")
@@ -70,16 +64,16 @@ struct CanvasHost: View {
     @ViewBuilder
     private var content: some View {
         switch appState.currentArtifact {
-        case .kickoff:
-            KickoffView()
-        case .taskSplit:
-            TaskSplitView()
-        case .wizard:
-            WizardView()
-        case .sprintStatus:
-            SprintStatusView()
-        case .kanban:
-            KanbanView()
+        case .workflows:
+            WorkflowsListView()
+        case .workflowBuilder(let id):
+            WorkflowBuilderView(workflowId: id)
+        case .workflowRun(let id):
+            WorkflowRunView(runId: id)
+        case .day:
+            DayView()
+        case .activity:
+            ActivityView()
         case .ticketsList:
             TicketsListView()
         case .ticketDetail(let id):
@@ -88,18 +82,6 @@ struct CanvasHost: View {
             } else {
                 emptyState("Ticket \(id) not found.")
             }
-        case .draftStack:
-            DraftReviewStackView()
-        case .digest:
-            DigestSectionView()
-        case .doctrines:
-            DoctrinesView()
-        case .workflows:
-            WorkflowsListView()
-        case .workflowBuilder(let id):
-            WorkflowBuilderView(workflowId: id)
-        case .workflowRun(let id):
-            WorkflowRunView(runId: id)
         case .settings:
             SettingsView()
         case .empty(let reason):
