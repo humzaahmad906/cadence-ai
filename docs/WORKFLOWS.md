@@ -52,10 +52,10 @@ blocks never roam your filesystem unscoped by accident.
 | --- | --- | --- |
 | `input` | Trigger | Seeds the run with typed text (prompted at run time if empty). |
 | `agentPrompt` | AI | Runs the Claude agent over scoped repos; template reads `{{input}}`, `{{repos}}`, `{{port}}`. |
-| `createDescription` / `createSolution` | AI | Reuse the wizard's description / solution agents verbatim. |
+| `createDescription` / `createSolution` | AI | Grounded task description, then an implementation plan (`AppState.descriptionAgent` / `solutionAgent`). |
 | `docQA` / `repoReport` | AI | Agent presets: answer about a doc / summarize git activity. |
-| `summarize` | AI | Fold running output into markdown (optionally the daily digest). |
-| `createTickets` | Action | Parse JSON `{"tickets":[…]}` and save each as a ticket. |
+| `summarize` | AI | Fold running output into a markdown summary. |
+| `createTickets` | Action | Parse JSON `{"tickets":[…]}` and save each as a ticket. Read them back in Settings → Archive. |
 | `code` | Action | Run a **Python** script (Generate / Validate / Run) — see below. |
 | `viewer` | Action | Read-only render of a doc / ticket / repo summary / previous output. |
 | `manualReview` | Gate | Pause the run for approve / edit / reject. |

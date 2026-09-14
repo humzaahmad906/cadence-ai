@@ -112,6 +112,9 @@ struct DayView: View {
         let idx = index(of: block) ?? 0
         let begins = appState.day.startOf(idx)
         let running = isRunning(block, now: now)
+        // The clock tells you where the day is; the timer tells you where you are. Either one
+        // lights the block, because with blocks worked in any order they often disagree.
+        let live = running || block.isTiming
 
         return HStack(alignment: .top, spacing: DS.space3) {
             Text(clock(begins))
@@ -133,12 +136,12 @@ struct DayView: View {
             }
             .padding(DS.space5)
             .frame(maxWidth: .infinity, minHeight: height(block), alignment: .topLeading)
-            .background(cardBackground(block, running: running))
+            .background(cardBackground(block, running: live))
             .overlay(
                 RoundedRectangle(cornerRadius: DS.radiusL, style: .continuous)
-                    .stroke(running ? block.accent.color.opacity(0.45) : DS.border, lineWidth: 1)
+                    .stroke(live ? block.accent.color.opacity(0.45) : DS.border, lineWidth: 1)
             )
-            .cardShadow(block.done ? 0 : (running ? 2 : 1))
+            .cardShadow(block.done ? 0 : (live ? 2 : 1))
             .opacity(block.done ? 0.72 : 1)
         }
     }
@@ -159,8 +162,7 @@ struct DayView: View {
     private func titleRow(_ block: DayBlock, begins: Int) -> some View {
         HStack(spacing: DS.space3) {
             Button {
-                guard let i = index(of: block) else { return }
-                appState.day.blocks[i].done.toggle()
+                appState.day.setDone(blockId: block.id, !block.done)
             } label: {
                 Image(systemName: block.done ? "checkmark.square.fill" : "square")
                     .font(.system(size: 16, weight: .medium))
@@ -180,6 +182,7 @@ struct DayView: View {
                 .foregroundStyle(DS.textTertiary)
                 .monospacedDigit()
 
+            timerControl(block)
             durationStepper(block)
             reorderButtons(block)
 
@@ -188,10 +191,42 @@ struct DayView: View {
                 appState.day.blocks.remove(at: i)
             } label: {
                 Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
+                    .frame(width: 16, height: 16)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .foregroundStyle(DS.textTertiary)
             .help("Remove block")
+        }
+    }
+
+    /// Start/stop for this block, with its running total beside it. This is the only timer in
+    /// the day — a block with no tasks listed times exactly the same as a full one.
+    private func timerControl(_ block: DayBlock) -> some View {
+        let accent = block.accent.color
+        return HStack(spacing: DS.space2) {
+            if block.isTiming {
+                TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                    Text(DayBlock.clock(block.elapsed(at: ctx.date)))
+                        .font(DS.Font.caption).monospacedDigit()
+                        .foregroundStyle(accent)
+                }
+            } else if block.secondsSpent > 0 {
+                let over = block.secondsSpent > block.minutes * 60
+                Text(DayBlock.clock(block.secondsSpent))
+                    .font(DS.Font.caption).monospacedDigit()
+                    .foregroundStyle(over ? accent : DS.textTertiary)
+            }
+
+            Button {
+                appState.day.toggleTimer(blockId: block.id)
+            } label: {
+                Image(systemName: block.isTiming ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.system(size: 20))
+                    .foregroundStyle(block.isTiming ? accent : accent.opacity(0.55))
+            }
+            .buttonStyle(.plain)
+            .help(block.isTiming ? "Pause this block" : "Start timing this block")
         }
     }
 
@@ -203,6 +238,8 @@ struct DayView: View {
             } label: { Image(systemName: "minus") }
                 .buttonStyle(.plain)
                 .frame(width: 20, height: 20)
+                // Without this the hit area is the glyph itself — and "minus" is a 2pt bar.
+                .contentShape(Rectangle())
                 .background(RoundedRectangle(cornerRadius: DS.radiusS).fill(DS.subtleFill))
 
             Text(label(block.minutes))
@@ -219,6 +256,7 @@ struct DayView: View {
             } label: { Image(systemName: "plus") }
                 .buttonStyle(.plain)
                 .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
                 .background(RoundedRectangle(cornerRadius: DS.radiusS).fill(DS.subtleFill))
         }
         .foregroundStyle(DS.textSecondary)
@@ -229,12 +267,16 @@ struct DayView: View {
         return VStack(spacing: 1) {
             Button { move(block, by: -1) } label: {
                 Image(systemName: "chevron.up").font(.system(size: 8, weight: .bold))
+                    .frame(width: 16, height: 12)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(i == 0)
 
             Button { move(block, by: 1) } label: {
                 Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
+                    .frame(width: 16, height: 12)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(i >= appState.day.blocks.count - 1)
@@ -256,6 +298,8 @@ struct DayView: View {
                         Image(systemName: task.done ? "circle.inset.filled" : "circle")
                             .font(.system(size: 11))
                             .foregroundStyle(task.done ? DS.textTertiary : DS.textSecondary)
+                            .frame(width: 16, height: 16)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
 
@@ -271,6 +315,8 @@ struct DayView: View {
                         appState.day.blocks[bi].tasks.removeAll { $0.id == task.id }
                     } label: {
                         Image(systemName: "xmark").font(.system(size: 9))
+                            .frame(width: 16, height: 16)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(DS.textTertiary)
@@ -355,7 +401,7 @@ struct DayView: View {
                                 Spacer()
                                 Button("move up") {
                                     guard !appState.day.blocks.isEmpty else { return }
-                                    appState.day.blocks[0].tasks.append(DayTask(text: item.text))
+                                    appState.day.blocks[0].tasks.append(item)
                                     appState.day.later.removeAll { $0.id == item.id }
                                 }
                                 .buttonStyle(.plain)
@@ -364,7 +410,11 @@ struct DayView: View {
 
                                 Button {
                                     appState.day.later.removeAll { $0.id == item.id }
-                                } label: { Image(systemName: "xmark").font(.system(size: 9)) }
+                                } label: {
+                                    Image(systemName: "xmark").font(.system(size: 9))
+                                        .frame(width: 16, height: 16)
+                                        .contentShape(Rectangle())
+                                }
                                     .buttonStyle(.plain)
                                     .foregroundStyle(DS.textTertiary)
                             }

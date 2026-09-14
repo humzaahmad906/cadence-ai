@@ -1,11 +1,43 @@
 import Foundation
 
 actor ClaudeBridge {
-    let binary: String
-    init(binary: String = "/opt/homebrew/bin/claude") { self.binary = binary }
+    private(set) var binary: String
+    /// App-wide fallback for calls that don't name a model — a workflow block that sets its own
+    /// still wins. Applied in `resolve`, so every CLI invocation picks it up in one place.
+    private(set) var defaultModel: String
+    private(set) var defaultEffort: String
+
+    init(settings: ClaudeSettings = .load()) {
+        self.binary = settings.binary
+        self.defaultModel = settings.model
+        self.defaultEffort = settings.effort
+    }
+
+    func apply(_ settings: ClaudeSettings) {
+        binary = settings.binary
+        defaultModel = settings.model
+        defaultEffort = settings.effort
+    }
+
+    /// A per-call value beats the app default; the app default beats the CLI's own.
+    private func resolve(model: String, effort: String) -> (model: String, effort: String) {
+        (model.isEmpty ? defaultModel : model, effort.isEmpty ? defaultEffort : effort)
+    }
+
+    /// `--model` / `--effort` are omitted entirely when both resolve to empty, which leaves the
+    /// CLI on whatever it's configured to use.
+    private func modelArgs(model: String, effort: String) -> [String] {
+        let r = resolve(model: model, effort: effort)
+        var args: [String] = []
+        if !r.model.isEmpty { args.append(contentsOf: ["--model", r.model]) }
+        if !r.effort.isEmpty { args.append(contentsOf: ["--effort", r.effort]) }
+        return args
+    }
 
     /// Agent mode: `claude -p goal --output-format json`. Native Read/Grep/Glob/Bash(git) only.
-    func promptAgent(userMessage: String, systemPrompt: String, timeout: TimeInterval = 300) async throws -> String {
+    func promptAgent(userMessage: String, systemPrompt: String,
+                     model: String = "", effort: String = "",
+                     timeout: TimeInterval = 300) async throws -> String {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: binary)
         p.arguments = [
@@ -16,7 +48,7 @@ actor ClaudeBridge {
                               "Bash(git log:*)", "Bash(git show:*)", "Bash(git blame:*)", "Bash(git rev-parse:*)",
             "--permission-mode", "bypassPermissions",
             "--dangerously-skip-permissions",
-        ]
+        ] + modelArgs(model: model, effort: effort)
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
         p.standardError = err
@@ -44,8 +76,11 @@ actor ClaudeBridge {
 
     /// Agent + JSON: prompts Claude with MCP tools, expects the final message to be JSON
     /// (either {"kind":"reply","text":...} or {"kind":"propose","reply":"...","actions":[...]}).
-    func promptAgentJSON(userMessage: String, systemPrompt: String, timeout: TimeInterval = 300) async throws -> Any {
-        let raw = try await promptAgent(userMessage: userMessage, systemPrompt: systemPrompt, timeout: timeout)
+    func promptAgentJSON(userMessage: String, systemPrompt: String,
+                         model: String = "", effort: String = "",
+                         timeout: TimeInterval = 300) async throws -> Any {
+        let raw = try await promptAgent(userMessage: userMessage, systemPrompt: systemPrompt,
+                                        model: model, effort: effort, timeout: timeout)
         let cleaned = Self.extractJSON(from: raw)
         guard let data = cleaned.data(using: .utf8) else { throw ClaudeError.badJSON(raw) }
         do { return try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) }
@@ -85,8 +120,7 @@ actor ClaudeBridge {
             "--permission-mode", "bypassPermissions",
             "--dangerously-skip-permissions",
         ])
-        if !model.isEmpty { args.append(contentsOf: ["--model", model]) }
-        if !effort.isEmpty { args.append(contentsOf: ["--effort", effort]) }
+        args.append(contentsOf: modelArgs(model: model, effort: effort))
         p.arguments = args
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
@@ -148,8 +182,7 @@ actor ClaudeBridge {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: binary)
         var args = ["-p", text]
-        if !model.isEmpty { args.append(contentsOf: ["--model", model]) }
-        if !effort.isEmpty { args.append(contentsOf: ["--effort", effort]) }
+        args.append(contentsOf: modelArgs(model: model, effort: effort))
         p.arguments = args
         let out = Pipe(), err = Pipe()
         p.standardOutput = out

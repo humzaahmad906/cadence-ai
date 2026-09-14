@@ -6,9 +6,6 @@ import SwiftUI
 final class AppState: ObservableObject {
     @Published var tickets: [Ticket] = []
     @Published var currentSprint: Sprint?
-    @Published var projects: [Project] = []
-    @Published var showPasteSprint = false
-    @Published var showDigestPreview = false
     @Published var digestDraft: String = ""
     @Published var selectedTicketId: String?
     @Published var conversations: [Conversation] = []
@@ -32,7 +29,7 @@ final class AppState: ObservableObject {
     @Published var repos: [RepoNode] = []
 
     // Canvas router
-    @Published var currentArtifact: CanvasArtifact = .kickoff
+    @Published var currentArtifact: CanvasArtifact = .workflows
     @Published var artifactBack: [CanvasArtifact] = []
     @Published var artifactForward: [CanvasArtifact] = []
 
@@ -76,20 +73,61 @@ final class AppState: ObservableObject {
     let claude = ClaudeBridge()
     let workflowStore = WorkflowStore()
     let dayStore = DayStore()
+    let activityLog = ActivityLog()
+
+    // MARK: claude CLI settings (Services/ClaudeSettings.swift)
+
+    @Published var claudeSettings = ClaudeSettings.load()
+
+    /// Persist and push to the bridge, so the next CLI call uses the new model without a relaunch.
+    func updateClaudeSettings(_ s: ClaudeSettings) {
+        claudeSettings = s
+        s.save()
+        Task { await claude.apply(s) }
+    }
 
     // MARK: day plan (Models/Day.swift + Services/DayStore.swift)
 
-    @Published var day: DayPlan = DayPlan.seed(date: DayPlan.key(for: Date()))
+    /// Drives the menu bar's per-second redraw. Kept in sync here rather than in the view so
+    /// it starts and stops with the data, whatever changed it.
+    let ticker = SecondTicker()
+
+    @Published var day: DayPlan = DayPlan.seed(date: DayPlan.key(for: Date())) {
+        didSet { ticker.setRunning(day.runningBlockId != nil) }
+    }
     @Published var dayHistory: [DayPlan] = []
 
     /// Load today, carrying yesterday's shape forward on the first open of the day.
     func loadDay() {
-        day = dayStore.today()
+        let result = dayStore.today()
+        day = result.plan
+        // A timer left running when the app quit would otherwise bill every hour it was closed.
+        let before = day
+        day.reconcileTimers()
+        if day != before { dayStore.save(day) }
+        if let previous = result.rolledFrom { archive(previous) }
         dayHistory = dayStore.recent(limit: 15).filter { $0.date != day.date }
     }
 
     func saveDay() {
         dayStore.save(day)
+    }
+
+    /// Write a finished day into the log. Blocks start empty each morning, so this is the only
+    /// record of what was in them — no judgement about which tasks counted as finished, just
+    /// what was there and how long the block ran.
+    private func archive(_ plan: DayPlan) {
+        let at = DayPlan.boundary(after: plan.endOfDay)
+        for block in plan.blocks where !block.tasks.isEmpty || block.secondsSpent > 0 {
+            let tracked = block.secondsSpent > 0 ? DayBlock.clock(block.secondsSpent) : "not timed"
+            let items = block.tasks.map { ($0.done ? "✓ " : "· ") + $0.text }.joined(separator: "   ")
+            activityLog.append(ActivityEvent(
+                kind: .dayArchive,
+                outcome: block.secondsSpent > 0 ? .ok : .info,
+                title: "\(block.name) — \(tracked)",
+                detail: items.isEmpty ? "nothing listed" : items,
+                at: at))
+        }
     }
     lazy var runner = WorkflowRunner(appState: self)
 
@@ -189,15 +227,7 @@ final class AppState: ObservableObject {
         return next
     }
 
-    // Pending drafts (signature flow A)
-    @Published var pendingDrafts: [TicketDraft] = []
-
-    // Wizard session (multi-step task workflow)
-    @Published var wizard: WizardSession?
     @Published var branchCatalog: [String: BranchCatalog] = [:]  // repoId -> catalog
-
-    // Task-split staging (between kickoff and wizard)
-    @Published var splitStaging: SplitStaging?
 
     /// Load branch list for a repo (cached in branchCatalog).
     @Published var indexingRepoPath: String?
@@ -229,217 +259,9 @@ final class AppState: ObservableObject {
         branchCatalog[repoId] = BranchCatalog(current: result.current, branches: result.branches)
     }
 
-    func setWizardTaskBranch(taskIdx: Int, repoId: String, branch: String) {
-        guard var w = wizard else { return }
-        var perTask = w.taskBranches[taskIdx] ?? [:]
-        perTask[repoId] = branch
-        w.taskBranches[taskIdx] = perTask
-        wizard = w
-    }
-
-    func setWizardDefaultBranch(repoId: String, branch: String) {
-        guard var w = wizard else { return }
-        w.defaultBranches[repoId] = branch
-        wizard = w
-    }
-
     /// Returns absolute paths for a set of repo IDs — used to grant --add-dir access.
     func repoPaths(for repoIds: [String]) -> [String] {
         repos.filter { repoIds.contains($0.id) }.map { $0.path }
-    }
-
-    /// Kickoff: user provides sprint description + repos. Agent splits into task drafts.
-    /// Advances canvas to .taskSplit where user can review/edit before wizard.
-    func submitSprintKickoff(sprintName: String, sprintDescription: String, repoIds: [String], defaultBranches: [String: String]) async {
-        let desc = sprintDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !desc.isEmpty else { return }
-
-        appendChat(ChatEntry(role: "you", text: "SPRINT KICKOFF: \(desc)", at: Date()))
-
-        agentStart()
-        defer { agentStop() }
-
-        let repoBlock = repos.filter { repoIds.contains($0.id) }
-            .map { r -> String in
-                let br = defaultBranches[r.id] ?? ""
-                return "\(r.id)|\(r.name)|\(r.path)|branch=\(br.isEmpty ? "(HEAD)" : br)"
-            }
-            .joined(separator: "\n")
-
-        let systemPrompt = """
-        You are the Cadence sprint splitter. Given a user's free-form sprint description + one or more repos (paths provided),
-        split the sprint into atomic tasks (one concrete deliverable each).
-
-        You have FULL repo access. Explore freely with native tools:
-        Read any file, Grep for patterns, Glob for paths, Bash(git *) for history.
-        You decide what to explore. Grepping README.md, key entry points, and top-level directories often gives fast structure.
-
-        Return JSON ONLY, no prose, no code fences:
-        {"tasks":[{"title":"...","hint":"one-line rationale citing a file/symbol","priority":"P0-P4","estimate":0}]}
-
-        Rules:
-        - Titles ≤ 80 chars, imperative form, atomic (one deliverable each).
-        - hint = one-line rationale grounded in real code (mention a file/symbol/functionality — cite by real path).
-        - Priority default P3 unless the dump signals urgency.
-        - Number of tasks: infer from the description — could be 1 to 12.
-        - Never fabricate file/function names — only cite what you actually read.
-        """
-
-        let userTurn = """
-        SPRINT: \(sprintName.isEmpty ? "(unnamed)" : sprintName)
-
-        USER DESCRIPTION:
-        \(desc)
-
-        REPOS FOR CONTEXT:
-        \(repoBlock.isEmpty ? "(none)" : repoBlock)
-        """
-
-        do {
-            let obj = try await claude.promptAgentJSONStreaming(
-                userMessage: userTurn,
-                systemPrompt: systemPrompt,
-                onToolUse: { [weak self] name in
-                    guard let self else { return }
-                    await MainActor.run { self.agentToolCalled(name) }
-                },
-                addDirs: repoPaths(for: repoIds),
-                timeout: 300
-            )
-            guard let dict = obj as? [String: Any],
-                  let arr = dict["tasks"] as? [[String: Any]] else {
-                appendChat(ChatEntry(role: "claude", text: "Split parse failed. Try refining the description.", at: Date()))
-                return
-            }
-            var proposed: [ProposedTask] = []
-            for r in arr {
-                guard let title = r["title"] as? String else { continue }
-                var p = ProposedTask(title: title, hint: r["hint"] as? String ?? "")
-                if let ps = r["priority"] as? String, let pr = Priority(rawValue: ps) { p.priority = pr }
-                if let e = r["estimate"] as? Double { p.estimate = e }
-                else if let e = r["estimate"] as? Int { p.estimate = Double(e) }
-                proposed.append(p)
-            }
-            splitStaging = SplitStaging(
-                sprintName: sprintName,
-                sprintDescription: desc,
-                repoIds: repoIds,
-                defaultBranches: defaultBranches,
-                tasks: proposed
-            )
-            appendChat(ChatEntry(role: "claude", text: "Split into \(proposed.count) task\(proposed.count == 1 ? "" : "s"). Review before running the wizard.", at: Date()))
-            setArtifact(.taskSplit)
-        } catch {
-            appendChat(ChatEntry(role: "claude", text: "Split error: \(error.localizedDescription)", at: Date()))
-        }
-    }
-
-    func regenerateSplit() async {
-        guard let s = splitStaging else { return }
-        await submitSprintKickoff(
-            sprintName: s.sprintName,
-            sprintDescription: s.sprintDescription,
-            repoIds: s.repoIds,
-            defaultBranches: s.defaultBranches
-        )
-    }
-
-    func splitAddEmptyTask() {
-        guard var s = splitStaging else { return }
-        s.tasks.append(ProposedTask(title: "", hint: ""))
-        splitStaging = s
-    }
-
-    func splitRemoveTask(at idx: Int) {
-        guard var s = splitStaging, idx < s.tasks.count else { return }
-        s.tasks.remove(at: idx)
-        splitStaging = s
-    }
-
-    func splitMoveTask(from src: Int, to dst: Int) {
-        guard var s = splitStaging, src < s.tasks.count, dst <= s.tasks.count, src != dst else { return }
-        let item = s.tasks.remove(at: src)
-        let insertAt = dst > src ? dst - 1 : dst
-        s.tasks.insert(item, at: min(insertAt, s.tasks.count))
-        splitStaging = s
-    }
-
-    func splitUpdateTask(_ idx: Int, _ mutate: (inout ProposedTask) -> Void) {
-        guard var s = splitStaging, idx < s.tasks.count else { return }
-        mutate(&s.tasks[idx])
-        splitStaging = s
-    }
-
-    /// User confirmed the split. Kick off the wizard proper.
-    func splitProceedToWizard() async {
-        guard let s = splitStaging else { return }
-        let titles = s.tasks.map { $0.title.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        guard !titles.isEmpty else { return }
-        splitStaging = nil
-        await startWizard(
-            sprintName: s.sprintName,
-            repoIds: s.repoIds,
-            defaultBranches: s.defaultBranches,
-            taskTitles: titles
-        )
-    }
-
-    /// Kick off the wizard with sprint name, repo IDs, default branches per repo, and task titles.
-    /// Advances canvas to .wizard on task 1's description phase.
-    func startWizard(sprintName: String, repoIds: [String], defaultBranches: [String: String] = [:], taskTitles: [String]) async {
-        let cleanTitles = taskTitles.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        guard !cleanTitles.isEmpty else { return }
-
-        // Generate ticket IDs based on existing + prefix
-        let existingIds = tickets.map { $0.id }
-        let prefix = detectPrefix() ?? "CAD"
-        var maxN = existingIds.compactMap { id -> Int? in
-            let comps = id.split(separator: "-")
-            guard comps.count == 2, let n = Int(comps[1]) else { return nil }
-            return n
-        }.max() ?? 0
-
-        var drafts: [TicketDraft] = []
-        for title in cleanTitles {
-            maxN += 1
-            var d = TicketDraft(id: "\(prefix)-\(maxN)", title: title, description: "")
-            d.attachedRepoIds = repoIds
-            d.sprint = currentSprint?.id
-            drafts.append(d)
-        }
-
-        wizard = WizardSession(
-            sprintName: sprintName.isEmpty ? "Sprint \(WizardSession.shortDate())" : sprintName,
-            repoIds: repoIds,
-            drafts: drafts,
-            index: 0,
-            phase: .description,
-            defaultBranches: defaultBranches
-        )
-        setArtifact(.wizard)
-        // Agent has full repo access; jump straight to description generation.
-        await generateDescriptionForCurrent()
-    }
-
-    private func detectPrefix() -> String? {
-        // Look at existing tickets — if they share a prefix like "PXLV-", reuse.
-        let prefixes = tickets.compactMap { t -> String? in
-            let comps = t.id.split(separator: "-")
-            return comps.count == 2 ? String(comps[0]) : nil
-        }
-        return Set(prefixes).count == 1 ? prefixes.first : nil
-    }
-
-    var wizardCurrentDraft: TicketDraft? {
-        guard let w = wizard, w.index < w.drafts.count else { return nil }
-        return w.drafts[w.index]
-    }
-
-    func updateWizardDraft(_ mutate: (inout TicketDraft) -> Void) {
-        guard var w = wizard, w.index < w.drafts.count else { return }
-        mutate(&w.drafts[w.index])
-        wizard = w
     }
 
     /// Shared "description writer" agent, reused by the wizard AND the workflow `createDescription`
@@ -550,147 +372,6 @@ final class AppState: ObservableObject {
         )
         let dict = obj as? [String: Any] ?? [:]
         return (dict["exploration"] as? String ?? "", dict["solution"] as? String ?? "")
-    }
-
-    /// Per-task branch map for the current wizard task (repoId -> effective branch).
-    private func wizardBranches(_ w: WizardSession) -> [String: String] {
-        var branches: [String: String] = [:]
-        for rid in w.repoIds {
-            let b = w.branch(forRepo: rid, taskIdx: w.index)
-            if !b.isEmpty { branches[rid] = b }
-        }
-        return branches
-    }
-
-    func generateDescriptionForCurrent() async {
-        guard let w = wizard, w.index < w.drafts.count else { return }
-        let draft = w.drafts[w.index]
-        do {
-            let result = try await descriptionAgent(taskTitle: draft.title, sprintName: w.sprintName,
-                                                    repoIds: w.repoIds, branches: wizardBranches(w))
-            if !result.description.isEmpty { updateWizardDraft { $0.description = result.description } }
-            if !result.exploration.isEmpty { store.writeExploration(id: draft.id, phase: "description", markdown: result.exploration) }
-        } catch {
-            addAmbient(AmbientEvent(kind: .error, text: "Description failed: \(error.localizedDescription)", at: Date(), target: nil))
-        }
-    }
-
-    func generateSolutionForCurrent() async {
-        guard let w = wizard, w.index < w.drafts.count else { return }
-        let draft = w.drafts[w.index]
-        do {
-            let result = try await solutionAgent(taskTitle: draft.title, description: draft.description,
-                                                 repoIds: w.repoIds, branches: wizardBranches(w))
-            if !result.solution.isEmpty { updateWizardDraft { $0.solution = result.solution } }
-            if !result.exploration.isEmpty { store.writeExploration(id: draft.id, phase: "solution", markdown: result.exploration) }
-        } catch {
-            addAmbient(AmbientEvent(kind: .error, text: "Solution failed: \(error.localizedDescription)", at: Date(), target: nil))
-        }
-    }
-
-    /// Advance from description phase to solution phase; auto-generate solution.
-    func wizardContinueToSolution() async {
-        guard var w = wizard else { return }
-        w.phase = .solution
-        wizard = w
-        await generateSolutionForCurrent()
-    }
-
-    /// Go back from solution to description (edit description again).
-    func wizardBackToDescription() {
-        guard var w = wizard else { return }
-        w.phase = .description
-        wizard = w
-    }
-
-    /// Commit current draft as a real Ticket + links, then advance to next task.
-    func wizardCommitAndAdvance() async {
-        guard var w = wizard, w.index < w.drafts.count else { return }
-        let d = w.drafts[w.index]
-
-        // Assemble issue.md body: ## Description + ## Solution
-        var body = "## Description\n\n\(d.description)"
-        if !d.solution.isEmpty {
-            body += "\n\n## Solution\n\n\(d.solution)"
-        }
-
-        let ticket = Ticket(
-            id: d.id, title: d.title, description: body,
-            status: .backlog, priority: d.priority,
-            estimate: d.estimate, assignee: d.assignee, labels: d.labels,
-            project: d.project, sprint: d.sprint ?? currentSprint?.id,
-            results: "", blockers: "", verification: "", notes: "", timeLog: "",
-            created: "", updated: ""
-        )
-
-        let firstRepo = d.attachedRepoIds.first ?? ""
-        let branch = firstRepo.isEmpty ? "" : w.branch(forRepo: firstRepo, taskIdx: w.index)
-        do {
-            try store.save(ticket, repo: firstRepo, branch: branch)
-            addAmbient(AmbientEvent(kind: .info, text: "Created \(d.id) — \(d.title)", at: Date(), target: .ticketDetail(id: d.id)))
-        } catch {
-            addAmbient(AmbientEvent(kind: .error, text: "Commit \(d.id) failed: \(error.localizedDescription)", at: Date(), target: nil))
-            return
-        }
-
-        // Advance
-        w.index += 1
-        w.phase = .description
-        wizard = w
-        await refresh()
-
-        if w.index >= w.drafts.count {
-            // Done
-            wizard = nil
-            setArtifact(.kanban)
-        } else {
-            await generateDescriptionForCurrent()
-        }
-    }
-
-    /// Skip current task without creating a ticket. Advance to next.
-    func wizardSkipCurrent() async {
-        guard var w = wizard else { return }
-        w.index += 1
-        w.phase = .description
-        wizard = w
-        if w.index >= w.drafts.count {
-            wizard = nil
-            setArtifact(.kanban)
-        } else {
-            await generateDescriptionForCurrent()
-        }
-    }
-
-    func wizardCancel() {
-        wizard = nil
-        setArtifact(.kickoff)
-    }
-
-    func addPendingDraft(_ d: TicketDraft) {
-        pendingDrafts.append(d)
-    }
-
-    func rejectDraft(_ d: TicketDraft) {
-        pendingDrafts.removeAll { $0.id == d.id }
-    }
-
-    func approveDraft(_ d: TicketDraft) async {
-        let ticket = Ticket(
-            id: d.id, title: d.title, description: d.description,
-            status: .backlog, priority: d.priority,
-            estimate: d.estimate, assignee: d.assignee, labels: d.labels,
-            project: d.project, sprint: d.sprint ?? currentSprint?.id,
-            results: "", blockers: "", verification: "", notes: "", timeLog: "",
-            created: "", updated: ""
-        )
-        do {
-            try store.save(ticket, repo: d.attachedRepoIds.first ?? "", branch: "")
-            pendingDrafts.removeAll { $0.id == d.id }
-            await refresh()
-        } catch {
-            addAmbient(AmbientEvent(kind: .error, text: "Draft \(d.id) failed: \(error.localizedDescription)", at: Date(), target: nil))
-        }
     }
 
     // Streaming callbacks used by ClaudeBridge.
@@ -814,162 +495,11 @@ final class AppState: ObservableObject {
     }
 
     func bootstrap() async {
-        do {
-            bootstrapError = nil
-            seedWorkflowsIfNeeded()
-            loadDay()
-            await refresh()
-            // Pick landing artifact based on state
-            if !pendingDrafts.isEmpty {
-                currentArtifact = .draftStack
-            } else if tickets.isEmpty {
-                currentArtifact = .kickoff
-            } else {
-                currentArtifact = .sprintStatus
-            }
-        } catch {
-            bootstrapError = "Load failed: \(error.localizedDescription)."
-            print("bootstrap failed: \(error)")
-        }
-    }
-
-    // MARK: kickoff pipeline
-
-    @Published var kickoffBusy: Bool = false
-
-    /// User dumped a sprint intent. Agent splits it into draft tickets.
-    /// Drafts are minimal (title + priority + rough description); enrichment per-draft comes later.
-    func submitKickoff(text: String) async {
-        let dump = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !dump.isEmpty else { return }
-
-        // Log the kickoff into current chat so the conversation shows what happened
-        appendChat(ChatEntry(role: "you", text: dump, at: Date()))
-
-        kickoffBusy = true
-        agentStart()
-        defer { kickoffBusy = false; agentStop() }
-
-        let existingIds = tickets.map { $0.id }
-        let repoDump = repos.map { "\($0.id)|\($0.name)|\($0.path)" }.joined(separator: "\n")
-
-        let systemPrompt = """
-        You are the Cadence sprint kickoff agent. Split the user's dump into distinct ticket drafts.
-
-        Rules:
-        - Return JSON ONLY, no prose outside JSON, no code fences.
-        - Shape: {"drafts":[{"id":"PROJ-N","title":"...","description":"initial rough description","priority":"P0|P1|P2|P3|P4","estimate":0,"labels":[]}]}
-        - Generate ticket IDs using an evident project prefix if one is implied, else CAD-N. N MUST be unique and higher than any existing ID.
-        - Existing ticket IDs to avoid: \(existingIds.joined(separator: ", "))
-        - Titles: ≤80 chars, imperative form, no ticket-ID prefix.
-        - description: 1-3 sentence rough draft — later steps will enrich with repo context.
-        - Priority default P3 unless the dump signals urgency.
-        - Estimate 0 unless clearly stated.
-        - Aim for atomic tickets: one concrete outcome per draft.
-        """
-
-        let userTurn = """
-        USER DUMP:
-        \(dump)
-
-        REPOS AVAILABLE FOR LATER CONTEXT (do NOT link yet — that's a later step):
-        \(repoDump.isEmpty ? "(none indexed)" : repoDump)
-        """
-
-        do {
-            let obj = try await claude.promptAgentJSONStreaming(
-                userMessage: userTurn,
-                systemPrompt: systemPrompt,
-                onToolUse: { [weak self] name in
-                    guard let self else { return }
-                    await MainActor.run { self.agentToolCalled(name) }
-                },
-                timeout: 180
-            )
-            guard let dict = obj as? [String: Any],
-                  let arr = dict["drafts"] as? [[String: Any]] else {
-                appendChat(ChatEntry(role: "claude", text: "Kickoff parse failed. Try again with a clearer dump.", at: Date()))
-                return
-            }
-            var newDrafts: [TicketDraft] = []
-            for r in arr {
-                guard let id = r["id"] as? String, let title = r["title"] as? String else { continue }
-                var d = TicketDraft(id: id, title: title, description: r["description"] as? String ?? "")
-                if let ps = r["priority"] as? String, let p = Priority(rawValue: ps) { d.priority = p }
-                if let e = r["estimate"] as? Double { d.estimate = e }
-                else if let e = r["estimate"] as? Int { d.estimate = Double(e) }
-                if let l = r["labels"] as? [String] { d.labels = l }
-                d.sprint = currentSprint?.id
-                newDrafts.append(d)
-            }
-            pendingDrafts = newDrafts
-            appendChat(ChatEntry(role: "claude", text: "Drafted \(newDrafts.count) ticket(s). Review, attach repos per ticket, then approve.", at: Date()))
-            setArtifact(.draftStack)
-        } catch {
-            appendChat(ChatEntry(role: "claude", text: "Kickoff error: \(error.localizedDescription)", at: Date()))
-        }
-    }
-
-    /// Enrich one draft using selected repos: agent reads files, expands description + verification,
-    /// proposes file links + functionality links. Returns the enriched draft (still pending).
-    func enrichDraft(_ draft: TicketDraft, withRepoIds repoIds: [String]) async {
-        guard !repoIds.isEmpty else { return }
-        agentStart()
-        defer { agentStop() }
-
-        let repoBlock = repos.filter { repoIds.contains($0.id) }.map { r in
-            "\(r.id)|\(r.name)|\(r.path)"
-        }.joined(separator: "\n")
-
-        let systemPrompt = """
-        You are the Cadence draft enrichment agent. Given ONE ticket draft + one or more tagged repos,
-        explore the repo with native tools (Read, Grep, Glob, Bash(git *)) to enrich it into a rich draft.
-
-        Rules:
-        - Only reference files you actually read. No fabrication.
-        - Return JSON ONLY (no prose, no fences), shape:
-          {"draft":{"id":"...","title":"...","description":"...","priority":"P0-P4","estimate":N,"labels":[]}}
-        - description MUST be markdown with sections: ## Purpose\\n## Approach\\n## Verification\\n## Notes
-        """
-
-        let userTurn = """
-        DRAFT:
-        id: \(draft.id)
-        title: \(draft.title)
-        current_description: \(draft.description)
-
-        REPOS TO CONSIDER:
-        \(repoBlock)
-        """
-
-        do {
-            let obj = try await claude.promptAgentJSONStreaming(
-                userMessage: userTurn,
-                systemPrompt: systemPrompt,
-                onToolUse: { [weak self] name in
-                    guard let self else { return }
-                    await MainActor.run { self.agentToolCalled(name) }
-                },
-                addDirs: repoPaths(for: repoIds),
-                timeout: 240
-            )
-            guard let dict = obj as? [String: Any] else { return }
-            var updated = draft
-            if let d = dict["draft"] as? [String: Any] {
-                if let s = d["description"] as? String { updated.description = s }
-                if let s = d["title"] as? String { updated.title = s }
-                if let ps = d["priority"] as? String, let p = Priority(rawValue: ps) { updated.priority = p }
-                if let e = d["estimate"] as? Double { updated.estimate = e }
-                else if let e = d["estimate"] as? Int { updated.estimate = Double(e) }
-                if let l = d["labels"] as? [String] { updated.labels = l }
-            }
-            updated.attachedRepoIds = repoIds
-            if let idx = pendingDrafts.firstIndex(where: { $0.id == draft.id }) {
-                pendingDrafts[idx] = updated
-            }
-        } catch {
-            addAmbient(AmbientEvent(kind: .error, text: "Enrich \(draft.id) failed: \(error.localizedDescription)", at: Date(), target: nil))
-        }
+        bootstrapError = nil
+        seedWorkflowsIfNeeded()
+        loadDay()
+        await refresh()
+        currentArtifact = .workflows
     }
 
     func persistUIState(route: String) {
@@ -1284,27 +814,6 @@ final class AppState: ObservableObject {
         } catch { print("save failed: \(error)") }
     }
 
-    /// Generate today's digest by running the built-in "Daily Digest" workflow. The workflow's
-    /// summarize block persists the result through `persistDigest`.
-    func generateDigestDraft() async {
-        seedWorkflowsIfNeeded()
-        loadWorkflows()
-        let digest = workflows.first(where: { $0.name == "Daily Digest" }) ?? {
-            let t = Workflow.dailyDigestTemplate()
-            try? workflowStore.save(t)
-            loadWorkflows()
-            return t
-        }()
-        await runWorkflow(digest.id)
-    }
-
-    func copyDigestNow() async {
-        if digestDraft.isEmpty { await generateDigestDraft() }
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        pb.setString(digestDraft, forType: .string)
-        Notifier.post(title: "Digest copied", body: "Paste into Slack.")
-    }
 }
 
 struct ChatEntry: Identifiable, Codable, Hashable {

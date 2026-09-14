@@ -1,7 +1,6 @@
 import SwiftUI
 
-/// Full-width adaptive canvas. The canvas artifact drives what appears; no route enum.
-/// (The left chat rail was removed; AgentChatView.swift is kept but unused.)
+/// Full-width adaptive canvas. The header picks the artifact; the canvas renders it.
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
 
@@ -22,7 +21,5 @@ struct ContentView: View {
                 .background(DS.danger.opacity(0.15))
             }
         }
-        .sheet(isPresented: $appState.showPasteSprint) { PasteSprintView() }
-        .sheet(isPresented: $appState.showDigestPreview) { DigestView() }
     }
 }

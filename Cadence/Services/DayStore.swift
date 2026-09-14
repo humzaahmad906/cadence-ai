@@ -54,18 +54,21 @@ final class DayStore {
     // MARK: today
 
     /// Today's plan: load it, or carry yesterday's shape forward, or seed from scratch.
-    func today(now: Date = Date()) -> DayPlan {
+    /// Today's plan, plus the day it replaced when this call is what rolled it over. The caller
+    /// needs that second value to archive the old day's contents before they're gone — the
+    /// rollover is the only moment they still exist.
+    func today(now: Date = Date()) -> (plan: DayPlan, rolledFrom: DayPlan?) {
         let key = DayPlan.key(for: now)
-        if let existing = load(key) { return existing }
+        if let existing = load(key) { return (existing, nil) }
 
-        let fresh: DayPlan
-        if let previous = recent(limit: 1).first {
-            fresh = previous.rolledOver(to: key)
-        } else {
-            fresh = DayPlan.seed(date: key)
+        guard let previous = recent(limit: 1).first else {
+            let fresh = DayPlan.seed(date: key)
+            save(fresh)
+            return (fresh, nil)
         }
+        let fresh = previous.rolledOver(to: key)
         save(fresh)
-        return fresh
+        return (fresh, previous)
     }
 
     /// Trim anything older than `keep` days so the folder doesn't grow forever.

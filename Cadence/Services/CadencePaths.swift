@@ -32,6 +32,12 @@ enum CadencePaths {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
+    /// Append-only activity feed (JSON Lines). Holds the events that aren't already a file
+    /// somewhere else: day-block starts, day rollovers, office arrivals. Workflow runs are
+    /// merged in from workflows/<ID>/runs/ at read time.
+    static var activityFile: URL { appSupport.appendingPathComponent("activity.jsonl") }
+    /// Which network counts as the office, and when we last said so.
+    static var networkFile: URL { appSupport.appendingPathComponent("network.json") }
     /// One file per day: days/<yyyy-MM-dd>.json.
     static var daysDir: URL {
         let dir = appSupport.appendingPathComponent("days")
