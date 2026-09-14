@@ -40,6 +40,9 @@ struct CanvasHost: View {
             Button { appState.setArtifact(.workflows) } label: { Label("Workflows", systemImage: "flowchart") }
                 .buttonStyle(SecondaryButtonStyle())
                 .help("Composable block-based workflows")
+            Button { appState.setArtifact(.day) } label: { Label("Day", systemImage: "calendar.day.timeline.left") }
+                .buttonStyle(SecondaryButtonStyle())
+                .help("Today's blocks")
             if !appState.tickets.isEmpty {
                 Button { appState.setArtifact(.sprintStatus) } label: { Label("Status", systemImage: "flag.checkered") }
                     .buttonStyle(SecondaryButtonStyle())
@@ -100,6 +103,8 @@ struct CanvasHost: View {
             WorkflowBuilderView(workflowId: id)
         case .workflowRun(let id):
             WorkflowRunView(runId: id)
+        case .day:
+            DayView()
         case .settings:
             SettingsView()
         case .empty(let reason):

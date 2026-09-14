@@ -32,6 +32,12 @@ enum CadencePaths {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
+    /// One file per day: days/<yyyy-MM-dd>.json.
+    static var daysDir: URL {
+        let dir = appSupport.appendingPathComponent("days")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
 }
 
 enum AttachmentStore {

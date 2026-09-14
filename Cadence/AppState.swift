@@ -75,6 +75,22 @@ final class AppState: ObservableObject {
     let repoRegistry = RepoRegistry()
     let claude = ClaudeBridge()
     let workflowStore = WorkflowStore()
+    let dayStore = DayStore()
+
+    // MARK: day plan (Models/Day.swift + Services/DayStore.swift)
+
+    @Published var day: DayPlan = DayPlan.seed(date: DayPlan.key(for: Date()))
+    @Published var dayHistory: [DayPlan] = []
+
+    /// Load today, carrying yesterday's shape forward on the first open of the day.
+    func loadDay() {
+        day = dayStore.today()
+        dayHistory = dayStore.recent(limit: 15).filter { $0.date != day.date }
+    }
+
+    func saveDay() {
+        dayStore.save(day)
+    }
     lazy var runner = WorkflowRunner(appState: self)
 
     // Composable workflows (block-based). See Models/Workflow.swift + Services/WorkflowRunner.swift.
@@ -801,6 +817,7 @@ final class AppState: ObservableObject {
         do {
             bootstrapError = nil
             seedWorkflowsIfNeeded()
+            loadDay()
             await refresh()
             // Pick landing artifact based on state
             if !pendingDrafts.isEmpty {

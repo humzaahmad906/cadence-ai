@@ -21,11 +21,12 @@ final class Scheduler: ObservableObject {
     }
 
     func handle(url: URL, appState: AppState) {
-        // cadence://digest, cadence://brief
+        // cadence://digest, cadence://brief, cadence://day
         switch url.host {
         case "digest": Task { await appState.generateDigestDraft() }
         case "copy":   Task { await appState.copyDigestNow() }
         case "brief":  Task { await self.morningBrief() }
+        case "day":    appState.setArtifact(.day)
         default: break
         }
     }
@@ -45,6 +46,58 @@ final class Scheduler: ObservableObject {
             lastIdleScan = now
             Task { await idleAndDeadlineScan() }
         }
+
+        // day plan — roll over at midnight, then announce each block as it starts
+        if let s = appState {
+            if s.day.date != DayPlan.key(for: now) { s.loadDay() }
+            announceBlockStart(now: now, state: s)
+        }
+    }
+
+    /// Fires once per block, inside the first few minutes of it. A window rather than an
+    /// exact minute match means a brief sleep or a missed tick doesn't swallow the alert,
+    /// while the 5-minute cap stops a stale burst when the app is opened mid-afternoon.
+    private func announceBlockStart(now: Date, state s: AppState) {
+        let c = Calendar.current.dateComponents([.hour, .minute], from: now)
+        let mins = (c.hour ?? 0) * 60 + (c.minute ?? 0)
+
+        var plan = s.day
+        var cursor = plan.startMinutes
+        var changed = false
+
+        for block in plan.blocks {
+            let into = mins - cursor
+            if into >= 0, into < 5, !block.done, !plan.notified.contains(block.id) {
+                plan.notified.append(block.id)
+                changed = true
+
+                let body = block.tasks.isEmpty
+                    ? "\(durationLabel(block.minutes)) — nothing listed yet. Add it now."
+                    : block.tasks.prefix(3).map { "• \($0.text)" }.joined(separator: "\n")
+
+                Notifier.post(title: "Start: \(block.name)",
+                              body: body,
+                              id: "day-\(plan.date)-\(block.id)")
+
+                s.addAmbient(AmbientEvent(kind: .info,
+                                          text: "\(block.name) started",
+                                          at: now,
+                                          target: .day))
+            }
+            cursor += block.minutes
+        }
+
+        if changed {
+            s.day = plan
+            s.saveDay()
+        }
+    }
+
+    private func durationLabel(_ m: Int) -> String {
+        let h = m / 60, r = m % 60
+        if h > 0 && r > 0 { return "\(h)h \(r)m" }
+        if h > 0 { return "\(h)h" }
+        return "\(r)m"
     }
 
     private func sameDay(_ a: Date?, _ b: Date) -> Bool {

@@ -15,6 +15,7 @@ enum CanvasArtifact: Hashable, Identifiable {
     case workflows                          // block-based workflow library
     case workflowBuilder(id: String)        // compose/edit one workflow
     case workflowRun(id: String)            // live run progress for one workflow
+    case day                                // today's time blocks
     case settings                           // paths + schedule
     case empty(reason: String)              // first-run / recovered from error
 
@@ -33,6 +34,7 @@ enum CanvasArtifact: Hashable, Identifiable {
         case .workflows: return "workflows"
         case .workflowBuilder(let i): return "workflow_builder_\(i)"
         case .workflowRun(let i): return "workflow_run_\(i)"
+        case .day: return "day"
         case .settings: return "settings"
         case .empty(let r): return "empty_\(r)"
         }
@@ -53,6 +55,7 @@ enum CanvasArtifact: Hashable, Identifiable {
         case .workflows: return "Workflows"
         case .workflowBuilder: return "Edit workflow"
         case .workflowRun: return "Workflow run"
+        case .day: return "Day"
         case .settings: return "Settings"
         case .empty: return "Cadence"
         }
@@ -74,6 +77,7 @@ enum CanvasArtifact: Hashable, Identifiable {
         case .workflows: return "flowchart"
         case .workflowBuilder: return "slider.horizontal.3"
         case .workflowRun: return "play.circle"
+        case .day: return "calendar.day.timeline.left"
         case .settings: return "gearshape"
         case .empty: return "sparkle"
         }
